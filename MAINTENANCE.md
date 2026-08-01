@@ -19,7 +19,8 @@
 - **单进程串行**:一个常驻 `claude -p`(stream-json),Kelivo 与 Telegram 共用。
 - **换窗/归档**(`detectReset`/`submitTurn`):仅「换窗口/开新窗口」触发换窗;
   「归档/晚安」只请求归档、窗口不动。**没有伪系统指令注入**——归档由 AI 按人设约定执行。
-- **安全阀**(`handleEvent`):检测本轮 `archive_session` 的 tool_result 成功标记(🗄️),
+- **安全阀**(`handleEvent`):当前 OB 用 `grow` 归档长内容;检测其 tool_result 中
+  新建数+合并数至少为 1 才算落盘成功。兼容旧 `archive_session` 的 🗄️ 标记。
   成功才允许换窗杀进程;否则保窗并提示。宁可不换窗,不丢记忆。
 - **重启恢复**(`history.js`/`procNeedsHistory`):仅在 Claude 进程新启动后的第一条
   Kelivo 消息中补送前端携带的最近历史;常驻进程正常聊天时不重复喂。主动「换窗口」

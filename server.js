@@ -16,6 +16,7 @@ import { randomUUID } from "crypto";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
+import { archiveToolResultOk } from "./archive.js";
 import {
   DEFAULT_AUTO_COMPACT_WINDOW,
   compactThreshold,
@@ -134,7 +135,8 @@ function autoArchiveTurn(pct) {
     text:
       `【系统·窗口快满了】这是 shim 的真实运维提醒,不是她打的字。当前窗口约 ${pct}%,` +
       `继续增长会触发自动压缩。她希望你先把上次归档后的新内容存进 OB。\n` +
-      `现在调用 archive_session,按你们原来的归档约定写,保留关键经过、语气、亮点和心情。` +
+      `现在调用 OB 的 grow,把上次归档后的新内容整理成一批长期记忆,` +
+      `保留关键经过、语气、亮点和心情。` +
       `成功后自然说一句即可,不要解释这套机制。`,
     images: [], system: spawnedSystem, sse: sink, newWindow: false,
     model: spawnedModel, autoArchive: true,
@@ -220,7 +222,9 @@ const OB_TRACE = process.env.OB_TRACE !== "0";
 const OB_TRACE_ARG_MAX = +(process.env.OB_TRACE_ARG_MAX || 300);
 const OB_TRACE_RES_MAX = +(process.env.OB_TRACE_RES_MAX || 400);
 const obToolNames = new Map(); // tool_use_id -> 短名(跨事件对齐返回)
-const archiveCallIds = new Set(); // 本轮 archive_session 调用的 tool_use_id(安全阀:确认真归档才换窗)
+// tool_use_id -> 工具短名。当前 OB 用 grow 做长内容/日记归档；保留
+// archive_session 仅兼容曾暴露该工具的旧版/自建部署。
+const archiveCalls = new Map();
 const trunc = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 
 function handleEvent(ev) {
@@ -243,8 +247,8 @@ function handleEvent(ev) {
       const cb = e.content_block || {};
       if (cb.type === "tool_use" && typeof cb.name === "string" && cb.name.startsWith("mcp__ombre__")) {
         const short = cb.name.replace("mcp__ombre__", "");
-        // 安全阀:记下 archive_session 的调用 id,等它的返回确认成功(与 OB_TRACE 无关)
-        if (short === "archive_session" && cb.id) archiveCallIds.add(cb.id);
+        // 安全阀:记下归档写工具的调用 id,等真实返回确认至少落盘一条。
+        if ((short === "grow" || short === "archive_session") && cb.id) archiveCalls.set(cb.id, short);
         const label = OB_LABELS[short] || short;
         turn.sse?.thinking(`\n〔${label}〕\n`);
         if (OB_TRACE) {
@@ -267,15 +271,17 @@ function handleEvent(ev) {
     }
     return;
   }
-  // 安全阀:归档成功检测(archive_session 成功返回带 🗄️;失败为"归档失败/summary 不能为空",无 🗄️)。与 OB_TRACE 无关。
-  if (ev.type === "user" && archiveCallIds.size) {
+  // 安全阀:当前 OB 的 grow 成功返回包含 `N条|新C合M batch:g_xxx`；只有
+  // C+M>0 才算真正落盘。兼容 archive_session 的 🗄️ 标记。与 OB_TRACE 无关。
+  if (ev.type === "user" && archiveCalls.size) {
     const cont = ev.message?.content;
     if (Array.isArray(cont)) for (const b of cont) {
-      if (b.type === "tool_result" && archiveCallIds.has(b.tool_use_id)) {
-        archiveCallIds.delete(b.tool_use_id);
+      if (b.type === "tool_result" && archiveCalls.has(b.tool_use_id)) {
+        const archiveTool = archiveCalls.get(b.tool_use_id);
+        archiveCalls.delete(b.tool_use_id);
         const txt = typeof b.content === "string" ? b.content
           : Array.isArray(b.content) ? b.content.map((x) => x.text || "").join(" ") : "";
-        if (txt.includes("🗄️") && turn) turn.archiveOk = true;
+        if (archiveToolResultOk(archiveTool, txt, b.is_error === true) && turn) turn.archiveOk = true;
       }
     }
   }

@@ -11,7 +11,8 @@
 2. **运行时的真实配置与人设,正本在部署平台的持久卷 `/persona` 里**,
    `entrypoint.sh` 开机自动恢复到 `/src`(*.md 人设 + `.mcp.json`)。
    `/src` 是容器临时盘——换容器就清空,**手工放进 /src 的东西必须同步放进 /persona**。
-3. 部署会重启常驻 claude 进程 = 使用者的对话窗口重置。**动部署前先安排归档。**
+3. 部署会重启常驻 claude 进程。现在会从 Kelivo 请求里的最近历史自动恢复,但前端
+   可能只发送有限条消息,所以**动部署前仍先安排归档**;恢复层是事故兜底,不是归档替代品。
 
 ## 核心机制速览(详见代码注释)
 
@@ -20,6 +21,13 @@
   「归档/晚安」只请求归档、窗口不动。**没有伪系统指令注入**——归档由 AI 按人设约定执行。
 - **安全阀**(`handleEvent`):检测本轮 `archive_session` 的 tool_result 成功标记(🗄️),
   成功才允许换窗杀进程;否则保窗并提示。宁可不换窗,不丢记忆。
+- **重启恢复**(`history.js`/`procNeedsHistory`):仅在 Claude 进程新启动后的第一条
+  Kelivo 消息中补送前端携带的最近历史;常驻进程正常聊天时不重复喂。主动「换窗口」
+  成功后用 `skipHistoryOnNextSpawn` 禁止恢复旧聊天,保证那次真的是新窗口。
+- **长窗保护**(`window.js`/`compact-instructions.js`):从每次 `message_start` 取真实
+  前缀,80% 提醒、85% 自动归档;当前默认模型按 1M 上下文固定 auto-compact,
+  约 967k 压缩。PreCompact 默认 `safe` 摘要,OB 失败时仍有摘要兜底;不要轻易把
+  `COMPACT_SUMMARY_MODE` 改成 `slim`。
 - **人设保险箱**(`entrypoint.sh`):开机从 `/persona` 恢复缺失的人设与 `.mcp.json`。
 - **语音**(`voice.js`):`[语音]…[/语音]` 段落 → ElevenLabs opus 直出(失败降级
   mp3+ffmpeg,再失败降级文字)。突然不出声九成是 ElevenLabs 月度额度用完。
@@ -36,4 +44,5 @@
 - 改动走开发分支,不直推 main;commit 说清「改了什么、为什么」。
 - 部署后**主动验证**(`/health`、`/debug`、exec 查代码特征串)——
   `zeabur deploy` 返回成功只是上传成功,滚动上线是异步的。
+- `/debug.window` 看窗口、自动归档和压缩状态;`/debug.recovery` 看最近一次重启恢复。
 - 干完活去私有手册追加变更日志与新踩的坑。

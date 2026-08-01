@@ -4,6 +4,7 @@
 
 - 人设放服务端 CLAUDE.md,**不被 cloak 盖掉**,100% 生效
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
+- 长对话压缩前自动归档;服务重启后从 Kelivo 最近历史恢复,不再只记头尾
 - 全云端,电脑不用开;走订阅,零 API 计费
 
 ```
@@ -24,7 +25,10 @@
 
 | 文件 | 说明 |
 |---|---|
-| `server.js` | shim 本体:Anthropic SSE ↔ 常驻 claude -p,含重置词、心跳、健康数据中转、多模型、OB 调用透明化、Telegram 前端 |
+| `server.js` | shim 本体:Anthropic SSE ↔ 常驻 claude -p,含窗口保护、重启恢复、心跳、多模型、OB 调用透明化、Telegram 前端 |
+| `history.js` | 进程重启后的 Kelivo 历史恢复(主动换窗时自动禁用) |
+| `window.js` | Claude Code 窗口用量计算与压缩阈值 |
+| `compact-instructions.js` | PreCompact 安全摘要钩子 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |
 | `entrypoint.sh` | 容器启动脚本(补装 claude 原生二进制等) |
 | `package.json` | 依赖 |

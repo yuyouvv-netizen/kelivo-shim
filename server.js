@@ -15,6 +15,13 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
+import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
+import {
+  DEFAULT_AUTO_COMPACT_WINDOW,
+  compactThreshold,
+  prefixFromMessageStart,
+  windowPct,
+} from "./window.js";
 
 // 容器默认 UTC,AI 的「今天」会比北京慢 8 小时。强制中国时间(不要可去掉),claude 子进程继承。
 process.env.TZ = process.env.TZ || "Asia/Shanghai";
@@ -59,20 +66,97 @@ const SOUL_ANCHOR = process.env.SOUL_ANCHOR ?? [
 const BUILTIN_TOOLS = process.env.BUILTIN_TOOLS ?? "WebSearch,WebFetch";
 const ALLOWED = process.env.ALLOWED_TOOLS ||
   ["WebSearch", "WebFetch", "mcp__ombre", "mcp__fish", "mcp__gmail"].join(",");
+// 与 SOUL_ANCHOR 分开追加:即使部署端整段覆盖了 SOUL_ANCHOR,压缩续接规则也不会丢。
+const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ??
+  (ALLOWED.includes("mcp__ombre")
+    ? "【压缩续接】如果上下文出现自动压缩/continued session 的续接标记,在回她第一句话前先调用 mcp__ombre__breath(wake=true) 取回长期记忆。若仍对不上就诚实问她,不要凭摘要编造。呼吸后自然接话,不用汇报机制。"
+    : "");
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+// ---- 长对话记忆保全 ----------------------------------------------------------
+// 明确固定 Claude Code 的 auto-compact 窗口,让「快满了」监测与真实压缩线使用同一把尺。
+// 可用 CLAUDE_CODE_AUTO_COMPACT_WINDOW / AUTO_COMPACT_WINDOW 覆盖;WINDOW_LIMIT
+// 则只覆盖 shim 的监测线。当前默认模型是 1M → Claude Code v2.1.x 约 967k 时自动压缩。
+const autoCompactRaw = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ||
+  process.env.AUTO_COMPACT_WINDOW || String(DEFAULT_AUTO_COMPACT_WINDOW);
+const AUTO_COMPACT_WINDOW = Number(autoCompactRaw) > 0
+  ? Number(autoCompactRaw) : DEFAULT_AUTO_COMPACT_WINDOW;
+const WINDOW_LIMIT = +(process.env.WINDOW_LIMIT || compactThreshold(AUTO_COMPACT_WINDOW));
+const WINDOW_WARN_PCT = +(process.env.WINDOW_WARN_PCT || 80);
+const WINDOW_AUTO_ARCHIVE = process.env.WINDOW_AUTO_ARCHIVE !== "0";
+const WINDOW_ARCHIVE_PCT = +(process.env.WINDOW_ARCHIVE_PCT || 85);
+const COMPACT_HOOK = process.env.COMPACT_HOOK !== "0";
+
+let windowTokens = 0;
+let windowWarned = false;
+let windowAutoArchived = false;
+let windowArchiveQueued = false;
+let compactions = 0;
+let lastCompactAt = null;
+let lastCompactPre = 0;
+
+function compactSettingsArg() {
+  const dir = import.meta.dirname || process.cwd();
+  const cmd = `node ${JSON.stringify(path.join(dir, "compact-instructions.js"))}`;
+  return JSON.stringify({ hooks: { PreCompact: [{ hooks: [{ type: "command", command: cmd }] }] } });
+}
+
+function notifyMemory(text) {
+  if (TG_TOKEN && tgChatId) return tgSend(text).catch((e) => log("[tg-err]", e.message));
+  if (BARK_KEY) return barkPush(text).catch((e) => log("[bark-err]", e.message));
+}
+
+function checkWindowUsage() {
+  if (!(WINDOW_LIMIT > 0)) return;
+  const pct = windowPct(windowTokens, WINDOW_LIMIT);
+  if (!windowWarned && pct >= WINDOW_WARN_PCT) {
+    windowWarned = true;
+    log("[window] warning", pct + "%", windowTokens, "/", WINDOW_LIMIT);
+    notifyMemory(`⚠️ 对话窗口用到 ${pct}% 了。我会在压缩前自动让他归档一次。`);
+  }
+  if (WINDOW_AUTO_ARCHIVE && !windowAutoArchived && !windowArchiveQueued && pct >= WINDOW_ARCHIVE_PCT) {
+    windowArchiveQueued = true;
+    log("[window] queue auto-archive at", pct + "%");
+    autoArchiveTurn(pct);
+  }
+}
+
+function autoArchiveTurn(pct) {
+  const sink = {
+    text() {}, thinking() {},
+    finish(_usage, fullText) {
+      const text = (fullText || "").replace(/‖/g, "\n").trim();
+      if (text) notifyMemory(text);
+    },
+  };
+  enqueue({
+    text:
+      `【系统·窗口快满了】这是 shim 的真实运维提醒,不是她打的字。当前窗口约 ${pct}%,` +
+      `继续增长会触发自动压缩。她希望你先把上次归档后的新内容存进 OB。\n` +
+      `现在调用 archive_session,按你们原来的归档约定写,保留关键经过、语气、亮点和心情。` +
+      `成功后自然说一句即可,不要解释这套机制。`,
+    images: [], system: spawnedSystem, sse: sink, newWindow: false,
+    model: spawnedModel, autoArchive: true,
+  });
+}
 
 // ---- 常驻 claude 进程 --------------------------------------------------------
 let proc = null, outBuf = "", busy = false, spawnedSystem = "", spawnedModel = MODEL;
 const queue = [];
 let turn = null;
 let lastUsage = null; // 最近一轮的完整 usage(含缓存字段),/debug 查 // 当前在处理的 { sse, resolve, fullText, curThinking, thinkOpen, textOpen, idx, done }
+let skipHistoryOnNextSpawn = false;
+let procNeedsHistory = false;
+let lastRecoveryAt = null;
+let lastRecoveryMessages = 0;
+let lastRecoveryChars = 0;
 
 function spawnClaude(kelivoSystem, model) {
   // ?? 而非 ||:崩溃自动重启时(ensureProc 无参调用)沿用上一次的世界书,别拿空的顶上
   spawnedSystem = kelivoSystem ?? spawnedSystem;
   spawnedModel = model || spawnedModel || MODEL;
-  const head = [SOUL_ANCHOR, HARD_RULE].filter(Boolean).join("\n\n");
+  const head = [SOUL_ANCHOR, HARD_RULE, MEMORY_CONTINUITY_RULE].filter(Boolean).join("\n\n");
   const append = spawnedSystem ? `${head}\n\n【场景设定/世界书】\n${spawnedSystem}` : head;
   const args = [
     "-p",
@@ -90,12 +174,21 @@ function spawnClaude(kelivoSystem, model) {
     "--allowedTools", ALLOWED,
     "--tools", BUILTIN_TOOLS,
   ];
+  if (COMPACT_HOOK) args.push("--settings", compactSettingsArg());
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
+  env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(AUTO_COMPACT_WINDOW);
+  outBuf = "";
+  windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
+  compactions = 0; lastCompactAt = null; lastCompactPre = 0;
+  procNeedsHistory = !skipHistoryOnNextSpawn;
+  skipHistoryOnNextSpawn = false;
   const p = spawn(CLAUDE_BIN, args, { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
   p.stdout.on("data", onStdout);
   p.stderr.on("data", (d) => log("[claude]", d.toString().slice(0, 300)));
   p.on("close", (code) => {
+    // 模型/世界书切换时旧进程可能在新进程启动后才 close,不能把新 proc 清空。
+    if (proc && proc !== p) { log("[claude] stale process exited", code); return; }
     log("[claude] exited", code);
     proc = null; busy = false;
     if (turn && !turn.done) { try { turn.sse?.finish(); } catch {} turn = null; }
@@ -131,9 +224,21 @@ const archiveCallIds = new Set(); // 本轮 archive_session 调用的 tool_use_i
 const trunc = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 
 function handleEvent(ev) {
+  if (ev.type === "system" && ev.subtype === "compact_boundary") {
+    compactions += 1;
+    lastCompactAt = Date.now();
+    lastCompactPre = ev.compact_metadata?.pre_tokens || windowTokens;
+    windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
+    log("[compact] boundary", ev.compact_metadata?.trigger || "?", "pre_tokens", lastCompactPre);
+    return;
+  }
   if (!turn) return;
   if (ev.type === "stream_event") {
     const e = ev.event || {}, d = e.delta || {};
+    if (e.type === "message_start") {
+      const prefix = prefixFromMessageStart(e);
+      if (prefix > turn.peakPrefix) turn.peakPrefix = prefix;
+    }
     if (e.type === "content_block_start") {
       const cb = e.content_block || {};
       if (cb.type === "tool_use" && typeof cb.name === "string" && cb.name.startsWith("mcp__ombre__")) {
@@ -193,12 +298,26 @@ function handleEvent(ev) {
   if (ev.type === "result") {
     lastUsage = ev.usage || null; // 供 /debug 查缓存字段
     lastTurnAt = Date.now(); // 任何一轮完成都刷新了缓存 TTL,自主唤醒以此计时
+    if (turn.peakPrefix > 0) {
+      windowTokens = turn.peakPrefix;
+      checkWindowUsage();
+    }
     if (ev.subtype && ev.subtype !== "success") {
       log("[result-error]", ev.subtype);
       if (!turn.fullText) turn.sse?.text(`⚠️[shim] ${ev.subtype}`);
     }
     const wantSwitch = turn.newWindow;
     const archivedOk = turn.archiveOk;
+    const wasAutoArchive = turn.autoArchive;
+    if (wasAutoArchive) {
+      windowArchiveQueued = false;
+      windowAutoArchived = archivedOk;
+      if (archivedOk) log("[window] auto-archive confirmed");
+      else {
+        log("[window] auto-archive failed; will retry on a later turn");
+        notifyMemory("⚠️ 压缩前自动归档这次没有确认成功，窗口仍保留，稍后会重试。");
+      }
+    }
     // 安全阀:想换窗但没成功归档 → 不换窗、保住窗口、提示她(宁可不换,绝不丢记忆)
     if (wantSwitch && !archivedOk) {
       turn.sse?.text("\n\n⚠️〔窗口保住了〕这次没成功归档,为防丢记忆没有换窗。想换新窗口,请先确认归档成功。");
@@ -210,7 +329,12 @@ function handleEvent(ev) {
     turn.sse?.finish(usage, turn.fullText);
     turn = null;
     busy = false;
-    if (doKill) { log("[window] archived ok, restarting proc"); try { proc.kill(); } catch {} proc = null; }
+    if (doKill) {
+      log("[window] archived ok, restarting proc");
+      skipHistoryOnNextSpawn = true; // 主动换窗后不要把 Kelivo 旧聊天重新灌进新窗口
+      const old = proc; proc = null;
+      try { old.kill(); } catch {}
+    }
     pump();
   }
 }
@@ -224,13 +348,32 @@ function pump() {
 
   // 世界书或模型变了就重启进程再喂(让新设定/新模型生效)
   const wantModel = item.model || spawnedModel;
-  if (proc && (item.system !== spawnedSystem || wantModel !== spawnedModel)) { try { proc.kill(); } catch {} proc = null; }
+  if (proc && (item.system !== spawnedSystem || wantModel !== spawnedModel)) {
+    const old = proc; proc = null;
+    try { old.kill(); } catch {}
+  }
   ensureProc(item.system, wantModel);
 
-  turn = { sse: item.sse, fullText: "", newWindow: !!item.newWindow, obBlocks: {}, archiveOk: false };
+  let text = item.text;
+  if (item.recovery && procNeedsHistory) {
+    text = withRecoveredHistory(text, item.recovery);
+    procNeedsHistory = false;
+    if (item.recovery.text) {
+      lastRecoveryAt = Date.now();
+      lastRecoveryMessages = item.recovery.messages;
+      lastRecoveryChars = item.recovery.chars;
+      log("[recovery] restored Kelivo history", {
+        messages: lastRecoveryMessages, chars: lastRecoveryChars, truncated: item.recovery.truncated,
+      });
+    } else log("[recovery] fresh Kelivo chat; no prior history");
+  }
+  turn = {
+    sse: item.sse, fullText: "", newWindow: !!item.newWindow, obBlocks: {}, archiveOk: false,
+    peakPrefix: 0, autoArchive: !!item.autoArchive,
+  };
   const content = item.images && item.images.length
-    ? [{ type: "text", text: item.text }, ...item.images]
-    : item.text;
+    ? [{ type: "text", text }, ...item.images]
+    : text;
   proc.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
 }
 
@@ -273,11 +416,6 @@ function makeCollector(res) {
 }
 
 // ---- 请求解析 ----------------------------------------------------------------
-function blocksToText(c) {
-  if (typeof c === "string") return c;
-  if (Array.isArray(c)) return c.map((b) => b.type === "text" ? b.text : "").join("");
-  return "";
-}
 function systemToText(s) {
   if (!s) return "";
   if (typeof s === "string") return s;
@@ -296,6 +434,21 @@ app.use(express.json({ limit: "100mb" }));
 app.get("/health", (_q, r) => r.json({ ok: true, model: spawnedModel, models: MODELS, busy, queued: queue.length }));
 app.get("/debug", (_q, r) => r.json({
   cache1h: process.env.ENABLE_PROMPT_CACHING_1H || "unset", lastUsage,
+  window: {
+    tokens: windowTokens, limit: WINDOW_LIMIT, pct: windowPct(windowTokens, WINDOW_LIMIT),
+    autoCompactWindow: AUTO_COMPACT_WINDOW,
+    warnPct: WINDOW_WARN_PCT, warned: windowWarned,
+    autoArchive: WINDOW_AUTO_ARCHIVE, archivePct: WINDOW_ARCHIVE_PCT,
+    archiveQueued: windowArchiveQueued, autoArchived: windowAutoArchived,
+    compactHook: COMPACT_HOOK, summaryMode: process.env.COMPACT_SUMMARY_MODE || "safe",
+    compactions, lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,
+    lastCompactPreTokens: lastCompactPre || null,
+  },
+  recovery: {
+    pending: procNeedsHistory,
+    lastAt: lastRecoveryAt ? new Date(lastRecoveryAt).toISOString() : null,
+    messages: lastRecoveryMessages, chars: lastRecoveryChars,
+  },
   voice: { ready: voiceReady(), model: voiceCfg.modelId, settings: voiceSettingsOf(voiceCfg) },
   ears: { ready: earsReady(), auth: !!EARS_TOKEN },   // 语音消息能否听出语气
   stickers: { count: stickerNames().length },         // 表情包图库有几张
@@ -874,7 +1027,10 @@ function submitTurn(text, images, sink, opts = {}) {
   if (TIME_STAMP) text = `${timeStamp(lastUserAt)}\n${text}`;
   lastUserAt = Date.now(); // 自主时间空闲计时基准
   log("[turn]", { src: opts.src || "kelivo", len: text.length, imgs: images.length, reset: reset || "-" });
-  enqueue({ text, images, system: opts.system ?? spawnedSystem, sse: sink, newWindow, model: opts.model || spawnedModel });
+  enqueue({
+    text, images, system: opts.system ?? spawnedSystem, sse: sink, newWindow,
+    model: opts.model || spawnedModel, recovery: opts.recovery,
+  });
 }
 
 function handleMessages(req, res) {
@@ -885,14 +1041,18 @@ function handleMessages(req, res) {
   const body = req.body || {};
   const messages = (body.messages || []).filter((m) => m.role === "user" || m.role === "assistant");
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
-  const text = blocksToText(lastUser?.content ?? "");
+  const text = contentToText(lastUser?.content ?? "");
   const images = extractImages(messages);
+  const recovery = recoveryTranscript(messages, {
+    maxMessages: +(process.env.REHYDRATE_MAX_MESSAGES || 128),
+    maxChars: +(process.env.REHYDRATE_MAX_CHARS || 240000),
+  });
   const system = systemToText(body.system);
   const stream = body.stream !== false;
   // Kelivo 选的模型;不在名单里(或没传)就沿用当前模型
   const model = MODELS.includes(body.model) ? body.model : spawnedModel;
   const sse = stream ? makeSSE(res) : makeCollector(res);
-  submitTurn(text, images, sse, { system, model, src: "kelivo" });
+  submitTurn(text, images, sse, { system, model, src: "kelivo", recovery });
 }
 
 // Kelivo 的 Claude 类型 Base URL 填 /v1 会拼成 /v1/messages;填根则是 /messages。两个都接。

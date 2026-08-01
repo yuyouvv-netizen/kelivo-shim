@@ -17,6 +17,7 @@ import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { archiveToolResultOk } from "./archive.js";
+import { isKelivoTitleRequest, localTitleForRequest } from "./title.js";
 import {
   DEFAULT_AUTO_COMPACT_WINDOW,
   compactThreshold,
@@ -1048,13 +1049,27 @@ function handleMessages(req, res) {
   const messages = (body.messages || []).filter((m) => m.role === "user" || m.role === "assistant");
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const text = contentToText(lastUser?.content ?? "");
+  const stream = body.stream !== false;
+
+  // Kelivo 的自动标题请求会退回当前聊天模型。它带着一份 <content> 历史，
+  // 但不是用户消息；若送进常驻 claude，会污染上下文并重置心跳计时。
+  // 在这里本地完成，既隔离 resident process，也省掉一次模型调用。
+  if (isKelivoTitleRequest(text)) {
+    const title = localTitleForRequest(text);
+    const sink = stream ? makeSSE(res) : makeCollector(res);
+    const usage = { input_tokens: 0, output_tokens: Array.from(title).length };
+    sink.text(title);
+    sink.finish(usage, title);
+    log("[title] handled locally", { title, requestChars: text.length });
+    return;
+  }
+
   const images = extractImages(messages);
   const recovery = recoveryTranscript(messages, {
     maxMessages: +(process.env.REHYDRATE_MAX_MESSAGES || 128),
     maxChars: +(process.env.REHYDRATE_MAX_CHARS || 240000),
   });
   const system = systemToText(body.system);
-  const stream = body.stream !== false;
   // Kelivo 选的模型;不在名单里(或没传)就沿用当前模型
   const model = MODELS.includes(body.model) ? body.model : spawnedModel;
   const sse = stream ? makeSSE(res) : makeCollector(res);

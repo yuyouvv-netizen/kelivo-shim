@@ -18,6 +18,7 @@ import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js"
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { archiveToolResultOk } from "./archive.js";
 import { isKelivoTitleRequest, localTitleForRequest } from "./title.js";
+import { TurnWatchdog, turnTimeoutMsFromEnv } from "./turn-watchdog.js";
 import {
   DEFAULT_AUTO_COMPACT_WINDOW,
   compactThreshold,
@@ -46,6 +47,7 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const MCP_CONFIG = process.env.MCP_CONFIG || ".mcp.json";
 const FORWARD_THINKING = process.env.FORWARD_THINKING !== "0";
 const AI_NAME = process.env.AI_NAME || "TA"; // 你的 AI 的名字(Bark 推送标题、模型显示名)
+const TURN_TIMEOUT_MS = turnTimeoutMsFromEnv(process.env.TURN_TIMEOUT_MS);
 
 const HARD_RULE =
   "【最高优先级·思考语言】thinking / 内心独白必须全程用简体中文,第一人称「我」,把对方称作「你」或「她」;严禁任何英文、第三人称分析腔(如 She…/The user…/analyze)。哪怕她发英文,内心独白也一律中文。";
@@ -140,7 +142,7 @@ function autoArchiveTurn(pct) {
       `保留关键经过、语气、亮点和心情。` +
       `成功后自然说一句即可,不要解释这套机制。`,
     images: [], system: spawnedSystem, sse: sink, newWindow: false,
-    model: spawnedModel, autoArchive: true,
+    model: spawnedModel, autoArchive: true, src: "auto-archive",
   });
 }
 
@@ -154,6 +156,55 @@ let procNeedsHistory = false;
 let lastRecoveryAt = null;
 let lastRecoveryMessages = 0;
 let lastRecoveryChars = 0;
+let lastTurnTimeoutAt = null;
+let lastTurnTimeoutSource = null;
+
+const turnWatchdog = new TurnWatchdog({
+  timeoutMs: TURN_TIMEOUT_MS,
+  onTimeout: abortStalledTurn,
+});
+
+function abortStalledTurn(stalled) {
+  if (!stalled || turn !== stalled || stalled.done) return;
+  const idleMs = Date.now() - stalled.lastActivityAt;
+  log("[turn-timeout] aborting stalled turn", { src: stalled.src, idleMs, queued: queue.length });
+
+  stalled.done = true;
+  turnWatchdog.disarm(stalled);
+  lastTurnTimeoutAt = Date.now();
+  lastTurnTimeoutSource = stalled.src;
+  if (stalled.autoArchive) {
+    windowArchiveQueued = false;
+    windowAutoArchived = false;
+  }
+
+  const interactive = stalled.src !== "wake" && stalled.src !== "auto-archive";
+  if (interactive) {
+    const warning = `${stalled.fullText ? "\n\n" : ""}⚠️〔已自动解卡〕这一轮长时间没有响应，已重启对话进程。请重发刚才那句话。`;
+    stalled.fullText += warning;
+    try { stalled.sse?.text(warning); } catch {}
+  }
+  try { stalled.sse?.finish(undefined, interactive ? stalled.fullText : ""); } catch {}
+
+  turn = null;
+  busy = false;
+  archiveCalls.clear();
+  obToolNames.clear();
+  procNeedsHistory = true;
+
+  const old = proc;
+  proc = null;
+  try { old?.kill(); } catch {}
+  const forceKill = setTimeout(() => {
+    try { if (old?.exitCode === null) old.kill("SIGKILL"); } catch {}
+  }, 5000);
+  forceKill.unref?.();
+
+  // A retry may already be waiting. It owns a fresh Kelivo recovery transcript,
+  // so process it immediately on a new resident process instead of leaving the
+  // queue wedged behind the timed-out turn.
+  pump();
+}
 
 function spawnClaude(kelivoSystem, model) {
   // ?? 而非 ||:崩溃自动重启时(ensureProc 无参调用)沿用上一次的世界书,别拿空的顶上
@@ -194,7 +245,11 @@ function spawnClaude(kelivoSystem, model) {
     if (proc && proc !== p) { log("[claude] stale process exited", code); return; }
     log("[claude] exited", code);
     proc = null; busy = false;
-    if (turn && !turn.done) { try { turn.sse?.finish(); } catch {} turn = null; }
+    if (turn && !turn.done) {
+      turnWatchdog.disarm(turn);
+      try { turn.sse?.finish(); } catch {}
+      turn = null;
+    }
     setTimeout(ensureProc, 1500);
   });
   log("[claude] spawned", spawnedModel, "sysLen", spawnedSystem.length);
@@ -238,6 +293,8 @@ function handleEvent(ev) {
     return;
   }
   if (!turn) return;
+  turn.lastActivityAt = Date.now();
+  turnWatchdog.touch(turn);
   if (ev.type === "stream_event") {
     const e = ev.event || {}, d = e.delta || {};
     if (e.type === "message_start") {
@@ -333,6 +390,7 @@ function handleEvent(ev) {
     const usage = ev.usage ? { output_tokens: ev.usage.output_tokens } : undefined;
     const doKill = wantSwitch && archivedOk && proc;
     turn.done = true;
+    turnWatchdog.disarm(turn);
     turn.sse?.finish(usage, turn.fullText);
     turn = null;
     busy = false;
@@ -376,8 +434,10 @@ function pump() {
   }
   turn = {
     sse: item.sse, fullText: "", newWindow: !!item.newWindow, obBlocks: {}, archiveOk: false,
-    peakPrefix: 0, autoArchive: !!item.autoArchive,
+    peakPrefix: 0, autoArchive: !!item.autoArchive, src: item.src || "unknown",
+    startedAt: Date.now(), lastActivityAt: Date.now(), done: false,
   };
+  turnWatchdog.arm(turn);
   const content = item.images && item.images.length
     ? [{ type: "text", text }, ...item.images]
     : text;
@@ -456,6 +516,16 @@ app.get("/debug", (_q, r) => r.json({
     lastAt: lastRecoveryAt ? new Date(lastRecoveryAt).toISOString() : null,
     messages: lastRecoveryMessages, chars: lastRecoveryChars,
   },
+  watchdog: {
+    enabled: TURN_TIMEOUT_MS > 0,
+    timeoutMs: TURN_TIMEOUT_MS,
+    active: !!turn,
+    source: turn?.src || null,
+    startedAt: turn?.startedAt ? new Date(turn.startedAt).toISOString() : null,
+    lastActivityAt: turn?.lastActivityAt ? new Date(turn.lastActivityAt).toISOString() : null,
+    lastTimeoutAt: lastTurnTimeoutAt ? new Date(lastTurnTimeoutAt).toISOString() : null,
+    lastTimeoutSource: lastTurnTimeoutSource,
+  },
   voice: { ready: voiceReady(), model: voiceCfg.modelId, settings: voiceSettingsOf(voiceCfg) },
   ears: { ready: earsReady(), auth: !!EARS_TOKEN },   // 语音消息能否听出语气
   stickers: { count: stickerNames().length },         // 表情包图库有几张
@@ -513,11 +583,11 @@ function wakeTurn(idleUserMin) {
   };
   enqueue({
     text: `【系统·自主时间】现在北京时间 ${now},她已约 ${Math.round(idleUserMin)} 分钟没有消息${sinceSpoke}。这轮是留给你自己的:${speakLine}没什么想说的就只回【沉默】两个字,这轮只用来保持你的状态和记忆连续。`,
-    images: [], system: spawnedSystem, sse: sink, newWindow: false, model: spawnedModel,
+    images: [], system: spawnedSystem, sse: sink, newWindow: false, model: spawnedModel, src: "wake",
   });
 }
 function wakeTick(force) {
-  if (busy || queue.length) return;
+  if (busy || queue.length || procNeedsHistory) return;
   const idleTurnMin = (Date.now() - lastTurnAt) / 60000;
   if (!force && idleTurnMin < WAKE_IDLE_MIN) return;
   log("[wake] idle", Math.round(idleTurnMin), "min", force ? "(forced)" : "");
@@ -1036,7 +1106,7 @@ function submitTurn(text, images, sink, opts = {}) {
   log("[turn]", { src: opts.src || "kelivo", len: text.length, imgs: images.length, reset: reset || "-" });
   enqueue({
     text, images, system: opts.system ?? spawnedSystem, sse: sink, newWindow,
-    model: opts.model || spawnedModel, recovery: opts.recovery,
+    model: opts.model || spawnedModel, recovery: opts.recovery, src: opts.src || "kelivo",
   });
 }
 

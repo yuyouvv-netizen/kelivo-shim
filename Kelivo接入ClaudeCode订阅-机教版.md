@@ -506,6 +506,7 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `SOUL_ANCHOR` | (可选)覆盖默认会话定性锚点 | 对抗 claude -p 的助手腔/解离,代码已带默认值,见 §9 |
 | `TIME_STAMP` | `1`(默认开) | 每条消息开头注入【时间】行:北京时间+距上条消息间隔。AI 对时间的自估天天漂,记忆里的时间跟着错,这个直接喂真实时钟。`0` 关闭 |
 | `TIME_GAP_MIN` | `5` | 间隔小于这个分钟数时只给时间不报间隔,免得连发消息时啰嗦 |
+| `TURN_TIMEOUT_MS` | `300000`(默认5分钟无活动) | 单轮超过此时间没有任何新事件就自动结束卡死请求、重启驻留进程;设 `0` 关闭 |
 | `ELEVENLABS_API_KEY` | (可选)ElevenLabs key | 启用 Telegram 语音:回复里 `[语音]English[/语音]` 段转原生语音条(sendVoice),失败自动降级发文字。需同时配 `ELEVENLABS_VOICE_ID`(Voice Design 产物;免费档不能走 API 用声音库社区声音) |
 | `ELEVENLABS_VOICE_ID` | (可选)voice id | 语音用的声音;换声音只改这个 |
 | `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2`(默认) | TTS 模型 |

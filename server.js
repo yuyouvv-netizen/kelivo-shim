@@ -18,7 +18,7 @@ import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js"
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { archiveToolResultOk } from "./archive.js";
 import { isKelivoTitleRequest, localTitleForRequest } from "./title.js";
-import { TurnWatchdog, turnTimeoutMsFromEnv } from "./turn-watchdog.js";
+import { autonomousWakeStatus, TurnWatchdog, turnTimeoutMsFromEnv } from "./turn-watchdog.js";
 import {
   DEFAULT_AUTO_COMPACT_WINDOW,
   compactThreshold,
@@ -587,18 +587,31 @@ function wakeTurn(idleUserMin) {
   });
 }
 function wakeTick(force) {
-  if (busy || queue.length || procNeedsHistory) return;
-  const idleTurnMin = (Date.now() - lastTurnAt) / 60000;
-  if (!force && idleTurnMin < WAKE_IDLE_MIN) return;
+  const idleTurnMs = Date.now() - lastTurnAt;
+  const status = autonomousWakeStatus({
+    hasProcess: !!proc,
+    busy,
+    queueLength: queue.length,
+    needsHistory: procNeedsHistory,
+    idleTurnMs,
+    idleThresholdMs: WAKE_IDLE_MIN * 60000,
+    force,
+  });
+  if (!status.triggered) {
+    log("[wake] skipped", status.reason);
+    return status;
+  }
+  const idleTurnMin = idleTurnMs / 60000;
   log("[wake] idle", Math.round(idleTurnMin), "min", force ? "(forced)" : "");
   wakeTurn((Date.now() - lastUserAt) / 60000);
+  return status;
 }
 setInterval(wakeTick, WAKE_CHECK_MIN * 60000);
 // 手动触发口(测试用):POST /hb?key=<SHIM_KEY>
 app.post("/hb", (req, res) => {
   if (SHIM_KEY && (req.query.key || req.get("x-api-key")) !== SHIM_KEY) return res.status(401).json({ ok: false });
-  wakeTick(true);
-  res.json({ ok: true, triggered: true });
+  const status = wakeTick(true);
+  res.json({ ok: true, ...status });
 });
 
 // ---- 音色热更新:换音色/调参数不用重启(= 不换窗口) --------------------------

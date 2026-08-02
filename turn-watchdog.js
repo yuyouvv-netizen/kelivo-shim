@@ -12,6 +12,30 @@ export function turnTimeoutMsFromEnv(raw) {
   return Math.min(MAX_TURN_TIMEOUT_MS, Math.max(MIN_TURN_TIMEOUT_MS, Math.round(value)));
 }
 
+// A wake must never create the resident process: only a real Kelivo turn has
+// the recovery transcript needed to make a freshly spawned process safe.
+// `force` skips the idle threshold only; every process/history/queue gate stays
+// in force. Returning the reason keeps the manual /hb endpoint truthful.
+export function autonomousWakeStatus({
+  hasProcess,
+  busy,
+  queueLength,
+  needsHistory,
+  idleTurnMs,
+  idleThresholdMs,
+  force = false,
+}) {
+  const waitingForHistory = !hasProcess || needsHistory;
+  if (!hasProcess) return { triggered: false, waitingForHistory, reason: "no-resident-process" };
+  if (needsHistory) return { triggered: false, waitingForHistory, reason: "waiting-for-history" };
+  if (busy) return { triggered: false, waitingForHistory, reason: "busy" };
+  if (queueLength > 0) return { triggered: false, waitingForHistory, reason: "queued" };
+  if (!force && idleTurnMs < idleThresholdMs) {
+    return { triggered: false, waitingForHistory, reason: "not-idle" };
+  }
+  return { triggered: true, waitingForHistory, reason: force ? "forced" : "idle" };
+}
+
 // Inactivity watchdog for one resident-Claude turn. touch() replaces the old
 // timer, so a stale callback can never terminate a later turn.
 export class TurnWatchdog {

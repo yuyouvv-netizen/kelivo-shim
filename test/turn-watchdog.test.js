@@ -1,12 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  autonomousWakeStatus,
   DEFAULT_TURN_TIMEOUT_MS,
   MAX_TURN_TIMEOUT_MS,
   MIN_TURN_TIMEOUT_MS,
   TurnWatchdog,
   turnTimeoutMsFromEnv,
 } from "../turn-watchdog.js";
+
+const wakeState = (overrides = {}) => autonomousWakeStatus({
+  hasProcess: true,
+  busy: false,
+  queueLength: 0,
+  needsHistory: false,
+  idleTurnMs: 60 * 60 * 1000,
+  idleThresholdMs: 50 * 60 * 1000,
+  ...overrides,
+});
 
 function fakeTimers() {
   let nextId = 1;
@@ -97,4 +108,35 @@ test("a previous turn cannot disarm the current turn", () => {
   const [timer] = timers.ids();
   timers.fire(timer);
   assert.deepEqual(timedOut, [second]);
+});
+
+test("autonomous wake requires a recovered, idle resident process with an empty queue", () => {
+  assert.deepEqual(wakeState({ hasProcess: false }), {
+    triggered: false, waitingForHistory: true, reason: "no-resident-process",
+  });
+  assert.deepEqual(wakeState({ needsHistory: true }), {
+    triggered: false, waitingForHistory: true, reason: "waiting-for-history",
+  });
+  assert.deepEqual(wakeState({ busy: true }), {
+    triggered: false, waitingForHistory: false, reason: "busy",
+  });
+  assert.deepEqual(wakeState({ queueLength: 1 }), {
+    triggered: false, waitingForHistory: false, reason: "queued",
+  });
+  assert.deepEqual(wakeState(), {
+    triggered: true, waitingForHistory: false, reason: "idle",
+  });
+});
+
+test("forced wake bypasses only the idle threshold", () => {
+  assert.deepEqual(wakeState({ idleTurnMs: 1000 }), {
+    triggered: false, waitingForHistory: false, reason: "not-idle",
+  });
+  assert.deepEqual(wakeState({ idleTurnMs: 1000, force: true }), {
+    triggered: true, waitingForHistory: false, reason: "forced",
+  });
+  assert.equal(wakeState({ hasProcess: false, force: true }).triggered, false);
+  assert.equal(wakeState({ needsHistory: true, force: true }).triggered, false);
+  assert.equal(wakeState({ busy: true, force: true }).triggered, false);
+  assert.equal(wakeState({ queueLength: 1, force: true }).triggered, false);
 });

@@ -17,14 +17,32 @@
 ## 核心机制速览(详见代码注释)
 
 - **单进程串行**:一个常驻 `claude -p`(stream-json),Kelivo 与 Telegram 共用。
-- **换窗/归档**(`detectReset`/`submitTurn`):仅「换窗口/开新窗口」触发换窗;
-  「归档/晚安」只请求归档、窗口不动。**没有伪系统指令注入**——归档由 AI 按人设约定执行。
+- **聊天不是运维命令**(`submitTurn`):任何聊天文字(包括「换窗口/开新窗口」)都不会触发
+  新 session。归档由 AI 按人设约定自然处理;主动换人使用聊天外操作(当前切模型/世界书
+  会创建新 session),避免把告别命令塞进两人的对话。
 - **安全阀**(`handleEvent`):当前 OB 用 `grow` 归档长内容;检测其 tool_result 中
   新建数+合并数至少为 1 才算落盘成功。兼容旧 `archive_session` 的 🗄️ 标记。
   成功才允许换窗杀进程;否则保窗并提示。宁可不换窗,不丢记忆。
-- **重启恢复**(`history.js`/`procNeedsHistory`):仅在 Claude 进程新启动后的第一条
-  Kelivo 消息中补送前端携带的最近历史;常驻进程正常聊天时不重复喂。主动「换窗口」
-  成功后用 `skipHistoryOnNextSpawn` 禁止恢复旧聊天,保证那次真的是新窗口。
+- **原生续接**(`session-state.js`/`entrypoint.sh`):Claude Code transcript 的 `projects`
+  目录接到 `/persona/claude-state`,shim 保存经模型+系统提示词指纹约束的 session ID。
+  进程崩溃/看门狗硬重启优先 `--resume`;被 CLI 明确拒绝时先重试原件一次,再保留异常
+  原件并自动换入 SHA-256 校验通过的副本,以同一 session ID 再试。网络/鉴权失败只退避
+  重试原会话,不触发降级。模型或世界书变化才强制新 session。
+- **降级恢复**(`history.js`/`procNeedsHistory`):只有原生 session 原件和同 session 副本均
+  续接失败时,才在新进程第一条 Kelivo 消息中补送前端实际提供的全部历史(默认不再砍成
+  128 条,字符预算仍生效)。常驻进程正常聊天不重复喂。
+- **断流/卡死保护**(`sse.js`/`turn-watchdog.js`):SSE 立即 flush headers,静默工具期
+  周期发送 comment heartbeat。五分钟无 Claude 事件时先发 stream-json `interrupt`
+  只中止当前轮;宽限期仍无结果才杀进程,随后优先原生续接。
+- **回信箱/同轮重连**(`delivery.js`/`turn-state.js`):请求指纹相同且仍在执行时,
+  新 SSE 连接附着到原轮并先重放已生成文字;最近完成回复短期写入 `/persona/turn-state`,
+  手机断线后重发同一句直接取回原文,不再次调用模型。
+- **事件亲历记录**(`turn-state.js`):持久化当前输入、工具开始/参数/返回、部分输出和
+  完成状态,仅供本地排错与回信箱使用;不保存隐藏 thinking,也绝不作为后台提示词塞回
+  对话。卡住或进程中断后不自动重发任何用户消息,由用户决定是否重新询问。
+- **优雅停机/滚动副本**:SIGTERM 先停接新轮、interrupt 当前轮并 flush 事件日志,
+  Claude 原生 transcript 每轮更新最近一份备份并记录大小与 SHA-256;原文件缺失时自动恢复,
+  resume 明确失败时旁存原件后自动换入已校验副本。
 - **长窗保护**(`window.js`/`compact-instructions.js`):从每次 `message_start` 取真实
   前缀,80% 提醒、85% 自动归档;当前默认模型按 1M 上下文固定 auto-compact,
   约 967k 压缩。PreCompact 默认 `safe` 摘要,OB 失败时仍有摘要兜底;不要轻易把
@@ -45,5 +63,7 @@
 - 改动走开发分支,不直推 main;commit 说清「改了什么、为什么」。
 - 部署后**主动验证**(`/health`、`/debug`、exec 查代码特征串)——
   `zeabur deploy` 返回成功只是上传成功,滚动上线是异步的。
-- `/debug.window` 看窗口、自动归档和压缩状态;`/debug.recovery` 看最近一次重启恢复。
+- `/debug.window` 看窗口、自动归档和压缩状态;`/debug.session` 看原生续接,
+  `/debug.recovery` 看 Kelivo 降级恢复,`/debug.stream`/`watchdog` 看断流与解卡保护,
+  `/debug.delivery` 看回信箱与在途请求。
 - 干完活去私有手册追加变更日志与新踩的坑。

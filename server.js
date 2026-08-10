@@ -18,7 +18,28 @@ import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js"
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { archiveToolResultOk } from "./archive.js";
 import { isKelivoTitleRequest, localTitleForRequest } from "./title.js";
-import { autonomousWakeStatus, TurnWatchdog, turnTimeoutMsFromEnv } from "./turn-watchdog.js";
+import {
+  autonomousWakeStatus,
+  interruptControlRequest,
+  interruptGraceMsFromEnv,
+  isBeijingWakeWindow,
+  TurnWatchdog,
+  turnTimeoutMsFromEnv,
+} from "./turn-watchdog.js";
+import { createAnthropicSSE, sseHeartbeatMsFromEnv } from "./sse.js";
+import { ReplayableDelivery } from "./delivery.js";
+import { requestFingerprint, TurnStateStore } from "./turn-state.js";
+import {
+  clearSessionState,
+  loadSessionState,
+  nativeResumeDefinitelyRejected,
+  restoreMissingSessionTranscript,
+  restoreRejectedSessionTranscript,
+  saveSessionState,
+  sessionFingerprint,
+  snapshotSessionTranscript,
+  validSessionId,
+} from "./session-state.js";
 import {
   DEFAULT_AUTO_COMPACT_WINDOW,
   compactThreshold,
@@ -48,6 +69,15 @@ const MCP_CONFIG = process.env.MCP_CONFIG || ".mcp.json";
 const FORWARD_THINKING = process.env.FORWARD_THINKING !== "0";
 const AI_NAME = process.env.AI_NAME || "TA"; // 你的 AI 的名字(Bark 推送标题、模型显示名)
 const TURN_TIMEOUT_MS = turnTimeoutMsFromEnv(process.env.TURN_TIMEOUT_MS);
+const TURN_INTERRUPT_GRACE_MS = interruptGraceMsFromEnv(process.env.TURN_INTERRUPT_GRACE_MS);
+const SSE_HEARTBEAT_MS = sseHeartbeatMsFromEnv(process.env.SSE_HEARTBEAT_MS);
+const SESSION_RESUME = process.env.SESSION_RESUME !== "0";
+const SESSION_STATE_FILE = process.env.SESSION_STATE_FILE || "/persona/claude-state/shim-session.json";
+const TURN_STATE_DIR = process.env.TURN_STATE_DIR || "/persona/turn-state";
+const MAILBOX_TTL_MS = Math.max(60_000, +(process.env.MAILBOX_TTL_MS || 3 * 60 * 1000));
+const SESSION_BACKUPS = Math.max(0, Math.min(10, +(process.env.SESSION_BACKUPS || 1)));
+const SESSION_BACKUP_DIR = process.env.SESSION_BACKUP_DIR || "/persona/claude-state/backups";
+const CLAUDE_CONFIG_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || "/root", ".claude");
 
 const HARD_RULE =
   "【最高优先级·思考语言】thinking / 内心独白必须全程用简体中文,第一人称「我」,把对方称作「你」或「她」;严禁任何英文、第三人称分析腔(如 She…/The user…/analyze)。哪怕她发英文,内心独白也一律中文。";
@@ -77,6 +107,7 @@ const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ??
     : "");
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+const turnState = new TurnStateStore({ dir: TURN_STATE_DIR, mailboxTtlMs: MAILBOX_TTL_MS });
 
 // ---- 长对话记忆保全 ----------------------------------------------------------
 // 明确固定 Claude Code 的 auto-compact 窗口,让「快满了」监测与真实压缩线使用同一把尺。
@@ -86,6 +117,12 @@ const autoCompactRaw = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ||
   process.env.AUTO_COMPACT_WINDOW || String(DEFAULT_AUTO_COMPACT_WINDOW);
 const AUTO_COMPACT_WINDOW = Number(autoCompactRaw) > 0
   ? Number(autoCompactRaw) : DEFAULT_AUTO_COMPACT_WINDOW;
+// Last-resort text reconstruction follows Claude Code's configured window
+// instead of a small fixed shim limit. Sixty percent leaves room for the system
+// prompt, MCP schemas, the interrupted event tail and the new reply.
+const REHYDRATE_MAX_CHARS = process.env.REHYDRATE_MAX_CHARS === undefined
+  ? Math.floor(AUTO_COMPACT_WINDOW * 0.6)
+  : Math.max(0, Number(process.env.REHYDRATE_MAX_CHARS) || 0);
 const WINDOW_LIMIT = +(process.env.WINDOW_LIMIT || compactThreshold(AUTO_COMPACT_WINDOW));
 const WINDOW_WARN_PCT = +(process.env.WINDOW_WARN_PCT || 80);
 const WINDOW_AUTO_ARCHIVE = process.env.WINDOW_AUTO_ARCHIVE !== "0";
@@ -147,7 +184,7 @@ function autoArchiveTurn(pct) {
 }
 
 // ---- 常驻 claude 进程 --------------------------------------------------------
-let proc = null, outBuf = "", busy = false, spawnedSystem = "", spawnedModel = MODEL;
+let proc = null, busy = false, spawnedSystem = "", spawnedModel = MODEL;
 const queue = [];
 let turn = null;
 let lastUsage = null; // 最近一轮的完整 usage(含缓存字段),/debug 查 // 当前在处理的 { sse, resolve, fullText, curThinking, thinkOpen, textOpen, idx, done }
@@ -158,11 +195,85 @@ let lastRecoveryMessages = 0;
 let lastRecoveryChars = 0;
 let lastTurnTimeoutAt = null;
 let lastTurnTimeoutSource = null;
+let lastTurnInterruptAt = null;
+let forceFreshSession = false;
+let nativeSessionId = null;
+let nativeSessionFingerprint = null;
+let nativeSessionResumed = false;
+let nativeRecoverySessionId = null;
+let nativeRecoveryStage = 0;
+let nativeTransientFailures = 0;
+let lastNativeRecoveryAt = null;
+let lastNativeRecoveryMode = null;
+let shuttingDown = false;
+let shutdownTimer = null;
+let shutdownFinishing = false;
+const inflightTurns = new Map();
 
 const turnWatchdog = new TurnWatchdog({
   timeoutMs: TURN_TIMEOUT_MS,
-  onTimeout: abortStalledTurn,
+  onTimeout: interruptStalledTurn,
 });
+
+function finishTurnDelivery(stalled, usage, status, replayable) {
+  let delivered = false;
+  try { delivered = !!stalled?.sse?.finish(usage, stalled?.fullText || ""); } catch {}
+  if (stalled?.requestKey) {
+    inflightTurns.delete(stalled.requestKey);
+    turnState.complete({
+      requestKey: stalled.requestKey,
+      fullText: stalled.fullText,
+      usage,
+      delivered,
+      replayable,
+      status,
+    });
+  } else turnState.mark(status, { delivered });
+  return delivered;
+}
+
+function snapshotNativeSessionSoon() {
+  if (!(SESSION_BACKUPS > 0) || !validSessionId(nativeSessionId)) return;
+  const sessionId = nativeSessionId;
+  const timer = setTimeout(() => {
+    const ok = snapshotSessionTranscript({
+      configDir: CLAUDE_CONFIG_HOME,
+      sessionId,
+      backupDir: SESSION_BACKUP_DIR,
+      maxBackups: SESSION_BACKUPS,
+    });
+    if (ok) log("[session] rolling transcript snapshot saved", sessionId.slice(-8));
+  }, 250);
+  timer.unref?.();
+}
+
+function clearInterruptGrace(stalled) {
+  if (stalled?.interruptTimer) clearTimeout(stalled.interruptTimer);
+  if (stalled) stalled.interruptTimer = null;
+}
+
+function interruptStalledTurn(stalled) {
+  if (!stalled || turn !== stalled || stalled.done) return;
+  const requestId = randomUUID();
+  const writable = proc?.stdin?.writable && !proc.stdin.destroyed;
+  if (!writable) return abortStalledTurn(stalled);
+
+  stalled.interruptRequestedAt = Date.now();
+  stalled.interruptRequestId = requestId;
+  lastTurnInterruptAt = stalled.interruptRequestedAt;
+  turnWatchdog.disarm(stalled);
+  turnState.mark("interrupting", { reason: "inactivity-timeout" });
+  log("[turn-timeout] requesting turn-only interrupt", {
+    src: stalled.src, queued: queue.length, graceMs: TURN_INTERRUPT_GRACE_MS,
+  });
+  try {
+    proc.stdin.write(JSON.stringify(interruptControlRequest(requestId)) + "\n");
+  } catch {
+    return abortStalledTurn(stalled);
+  }
+  stalled.interruptTimer = setTimeout(() => abortStalledTurn(stalled), TURN_INTERRUPT_GRACE_MS);
+  stalled.interruptTimer.unref?.();
+}
 
 function abortStalledTurn(stalled) {
   if (!stalled || turn !== stalled || stalled.done) return;
@@ -170,6 +281,7 @@ function abortStalledTurn(stalled) {
   log("[turn-timeout] aborting stalled turn", { src: stalled.src, idleMs, queued: queue.length });
 
   stalled.done = true;
+  clearInterruptGrace(stalled);
   turnWatchdog.disarm(stalled);
   lastTurnTimeoutAt = Date.now();
   lastTurnTimeoutSource = stalled.src;
@@ -180,11 +292,11 @@ function abortStalledTurn(stalled) {
 
   const interactive = stalled.src !== "wake" && stalled.src !== "auto-archive";
   if (interactive) {
-    const warning = `${stalled.fullText ? "\n\n" : ""}⚠️〔已自动解卡〕这一轮长时间没有响应，已重启对话进程。请重发刚才那句话。`;
+    const warning = `${stalled.fullText ? "\n\n" : ""}⚠️〔已自动解卡〕这一轮在温和中止后仍无响应，已重启进程；下次会优先续接原生会话。请先确认工具动作是否已完成，再重发。`;
     stalled.fullText += warning;
     try { stalled.sse?.text(warning); } catch {}
   }
-  try { stalled.sse?.finish(undefined, interactive ? stalled.fullText : ""); } catch {}
+  finishTurnDelivery(stalled, undefined, "timeout", false);
 
   turn = null;
   busy = false;
@@ -200,9 +312,9 @@ function abortStalledTurn(stalled) {
   }, 5000);
   forceKill.unref?.();
 
-  // A retry may already be waiting. It owns a fresh Kelivo recovery transcript,
-  // so process it immediately on a new resident process instead of leaving the
-  // queue wedged behind the timed-out turn.
+  // Never resubmit the abandoned user message. A later real Kelivo message
+  // owns the decision to continue, while the process still resumes its native
+  // session whenever possible.
   pump();
 }
 
@@ -212,6 +324,19 @@ function spawnClaude(kelivoSystem, model) {
   spawnedModel = model || spawnedModel || MODEL;
   const head = [SOUL_ANCHOR, HARD_RULE, MEMORY_CONTINUITY_RULE].filter(Boolean).join("\n\n");
   const append = spawnedSystem ? `${head}\n\n【场景设定/世界书】\n${spawnedSystem}` : head;
+  const fingerprint = sessionFingerprint(spawnedModel, append);
+  const saved = SESSION_RESUME && !forceFreshSession
+    ? loadSessionState(SESSION_STATE_FILE, fingerprint) : null;
+  if (saved && restoreMissingSessionTranscript({
+    configDir: CLAUDE_CONFIG_HOME,
+    sessionId: saved.sessionId,
+    backupDir: SESSION_BACKUP_DIR,
+  })) log("[session] restored a missing native transcript from rolling backup");
+  const inMemoryResume = SESSION_RESUME && !forceFreshSession &&
+    nativeSessionFingerprint === fingerprint && validSessionId(nativeSessionId)
+    ? nativeSessionId : null;
+  const resumeId = saved?.sessionId || inMemoryResume;
+  const plannedSessionId = resumeId || randomUUID();
   const args = [
     "-p",
     "--input-format", "stream-json",
@@ -228,43 +353,132 @@ function spawnClaude(kelivoSystem, model) {
     "--allowedTools", ALLOWED,
     "--tools", BUILTIN_TOOLS,
   ];
+  if (resumeId) args.push("--resume", resumeId);
+  else args.push("--session-id", plannedSessionId);
   if (COMPACT_HOOK) args.push("--settings", compactSettingsArg());
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
   env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(AUTO_COMPACT_WINDOW);
-  outBuf = "";
   windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
   compactions = 0; lastCompactAt = null; lastCompactPre = 0;
-  procNeedsHistory = !skipHistoryOnNextSpawn;
+  procNeedsHistory = !resumeId && !skipHistoryOnNextSpawn;
   skipHistoryOnNextSpawn = false;
+  forceFreshSession = false;
   const p = spawn(CLAUDE_BIN, args, { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
-  p.stdout.on("data", onStdout);
-  p.stderr.on("data", (d) => log("[claude]", d.toString().slice(0, 300)));
+  p.kelivoSessionId = plannedSessionId;
+  p.kelivoSessionFingerprint = fingerprint;
+  p.kelivoSessionResumed = !!resumeId;
+  p.kelivoSessionConfirmed = false;
+  p.kelivoOutBuf = "";
+  p.kelivoStderrBuf = "";
+  nativeSessionId = resumeId || null;
+  nativeSessionFingerprint = resumeId ? fingerprint : null;
+  nativeSessionResumed = !!resumeId;
+  p.stdout.on("data", (chunk) => onStdout(p, chunk));
+  p.stderr.on("data", (d) => {
+    const text = d.toString();
+    p.kelivoStderrBuf = (p.kelivoStderrBuf + text).slice(-8000);
+    log("[claude]", text.slice(0, 300));
+  });
   p.on("close", (code) => {
     // 模型/世界书切换时旧进程可能在新进程启动后才 close,不能把新 proc 清空。
     if (proc && proc !== p) { log("[claude] stale process exited", code); return; }
     log("[claude] exited", code);
     proc = null; busy = false;
+    let restartDelayMs = 1500;
+    const resumeUnconfirmed = p.kelivoSessionResumed && !p.kelivoSessionConfirmed;
+    const resumeRejected = resumeUnconfirmed && nativeResumeDefinitelyRejected(p.kelivoStderrBuf);
+    if (resumeRejected) {
+      const rejectedId = p.kelivoSessionId;
+      if (validSessionId(rejectedId) && nativeRecoverySessionId !== rejectedId) {
+        nativeRecoverySessionId = rejectedId;
+        nativeRecoveryStage = 1;
+        lastNativeRecoveryAt = Date.now();
+        lastNativeRecoveryMode = "original-retry";
+        nativeSessionId = rejectedId;
+        nativeSessionFingerprint = p.kelivoSessionFingerprint;
+        nativeSessionResumed = false;
+        procNeedsHistory = false;
+        log("[session] native resume rejected; retrying the untouched original session once");
+      } else if (validSessionId(rejectedId) && nativeRecoveryStage === 1 &&
+        restoreRejectedSessionTranscript({
+          configDir: CLAUDE_CONFIG_HOME,
+          sessionId: rejectedId,
+          backupDir: SESSION_BACKUP_DIR,
+        })) {
+        nativeRecoveryStage = 2;
+        lastNativeRecoveryAt = Date.now();
+        lastNativeRecoveryMode = "verified-backup";
+        nativeSessionId = rejectedId;
+        nativeSessionFingerprint = p.kelivoSessionFingerprint;
+        nativeSessionResumed = false;
+        procNeedsHistory = false;
+        log("[session] original retry rejected; retrying the same session from verified backup");
+      } else {
+        // Only after both the original transcript and one automatic same-session
+        // recovery fail do we create a fresh process. The next real Kelivo
+        // request contributes every message it still has, never an arbitrary 128.
+        log("[session] same-session recovery exhausted; using full Kelivo-provided history");
+        lastNativeRecoveryAt = Date.now();
+        lastNativeRecoveryMode = "kelivo-history";
+        clearSessionState(SESSION_STATE_FILE);
+        nativeSessionId = null;
+        nativeSessionFingerprint = null;
+        nativeSessionResumed = false;
+        nativeRecoverySessionId = null;
+        nativeRecoveryStage = 0;
+        forceFreshSession = true;
+        procNeedsHistory = true;
+      }
+    } else if (resumeUnconfirmed) {
+      // Network/auth/startup failures are not evidence that the transcript is
+      // bad. Keep retrying the exact native session with bounded backoff instead
+      // of destroying continuity because the surrounding service had a wobble.
+      nativeTransientFailures += 1;
+      restartDelayMs = Math.min(30_000, 1500 * (2 ** Math.min(nativeTransientFailures, 5)));
+      lastNativeRecoveryAt = Date.now();
+      lastNativeRecoveryMode = "transient-retry";
+      nativeSessionId = p.kelivoSessionId;
+      nativeSessionFingerprint = p.kelivoSessionFingerprint;
+      nativeSessionResumed = false;
+      procNeedsHistory = false;
+      log("[session] resume ended without a session rejection; preserving it for retry", {
+        retryInMs: restartDelayMs,
+      });
+    }
     if (turn && !turn.done) {
       turnWatchdog.disarm(turn);
-      try { turn.sse?.finish(); } catch {}
+      clearInterruptGrace(turn);
+      const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
+      if (interactive) {
+        const warning = `${turn.fullText ? "\n\n" : ""}⚠️〔进程已断开〕会自动尝试续接原生会话；请重发刚才这句话。`;
+        turn.fullText += warning;
+        try { turn.sse?.text(warning); } catch {}
+        finishTurnDelivery(turn, undefined, "process-exit", false);
+      } else {
+        finishTurnDelivery(turn, undefined, "process-exit", false);
+      }
       turn = null;
+      archiveCalls.clear();
+      obToolNames.clear();
     }
-    setTimeout(ensureProc, 1500);
+    if (shuttingDown) return finishShutdown();
+    setTimeout(() => { if (queue.length) pump(); else ensureProc(); }, restartDelayMs);
   });
-  log("[claude] spawned", spawnedModel, "sysLen", spawnedSystem.length);
+  log("[claude] spawned", spawnedModel, "sysLen", spawnedSystem.length,
+    resumeId ? "resume" : "fresh", plannedSessionId.slice(0, 8));
   return p;
 }
 function ensureProc(kelivoSystem, model) { if (!proc) proc = spawnClaude(kelivoSystem, model); }
 
-function onStdout(chunk) {
-  outBuf += chunk.toString();
-  const lines = outBuf.split("\n");
-  outBuf = lines.pop();
+function onStdout(sourceProc, chunk) {
+  sourceProc.kelivoOutBuf += chunk.toString();
+  const lines = sourceProc.kelivoOutBuf.split("\n");
+  sourceProc.kelivoOutBuf = lines.pop();
   for (const line of lines) {
     if (!line.trim()) continue;
     let ev; try { ev = JSON.parse(line); } catch { continue; }
-    handleEvent(ev);
+    handleEvent(ev, sourceProc);
   }
 }
 
@@ -283,7 +497,25 @@ const obToolNames = new Map(); // tool_use_id -> 短名(跨事件对齐返回)
 const archiveCalls = new Map();
 const trunc = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 
-function handleEvent(ev) {
+function handleEvent(ev, sourceProc = proc) {
+  if (validSessionId(ev?.session_id) && sourceProc === proc) {
+    const firstConfirmation = !sourceProc.kelivoSessionConfirmed ||
+      sourceProc.kelivoSessionId !== ev.session_id;
+    sourceProc.kelivoSessionId = ev.session_id;
+    sourceProc.kelivoSessionConfirmed = true;
+    nativeSessionId = ev.session_id;
+    nativeSessionFingerprint = sourceProc.kelivoSessionFingerprint;
+    nativeSessionResumed = sourceProc.kelivoSessionResumed;
+    nativeRecoverySessionId = null;
+    nativeRecoveryStage = 0;
+    nativeTransientFailures = 0;
+    if (firstConfirmation && !saveSessionState(SESSION_STATE_FILE, {
+      sessionId: nativeSessionId, fingerprint: nativeSessionFingerprint,
+    })) log("[session] WARNING: could not persist native session state");
+  }
+  // A killed process can flush a final result after its replacement starts.
+  // Never let that stale event finish or mutate the replacement's active turn.
+  if (sourceProc !== proc) return;
   if (ev.type === "system" && ev.subtype === "compact_boundary") {
     compactions += 1;
     lastCompactAt = Date.now();
@@ -303,6 +535,12 @@ function handleEvent(ev) {
     }
     if (e.type === "content_block_start") {
       const cb = e.content_block || {};
+      if (cb.type === "tool_use") {
+        const toolName = typeof cb.name === "string" ? cb.name : "unknown-tool";
+        if (cb.id) turn.toolNames.set(cb.id, toolName);
+        turn.toolInputs[e.index] = { name: toolName, buf: "" };
+        turnState.event("tool_start", { tool: toolName });
+      }
       if (cb.type === "tool_use" && typeof cb.name === "string" && cb.name.startsWith("mcp__ombre__")) {
         const short = cb.name.replace("mcp__ombre__", "");
         // 安全阀:记下归档写工具的调用 id,等真实返回确认至少落盘一条。
@@ -316,9 +554,22 @@ function handleEvent(ev) {
       }
     }
     if (e.type === "content_block_delta") {
-      if (d.type === "text_delta" && d.text) { const t = d.text.replace(/‖/g, "\n"); turn.fullText += t; turn.sse?.text(t); }
+      if (d.type === "text_delta" && d.text) {
+        const t = d.text.replace(/‖/g, "\n");
+        turn.fullText += t;
+        turn.sse?.text(t);
+        turnState.updateResponse(turn.fullText);
+      }
       else if (d.type === "thinking_delta") { turn.sse?.thinking(d.thinking || d.text || ""); }
-      else if (d.type === "input_json_delta" && turn.obBlocks[e.index]) { turn.obBlocks[e.index].buf += d.partial_json || ""; }
+      else if (d.type === "input_json_delta") {
+        if (turn.toolInputs[e.index]) turn.toolInputs[e.index].buf += d.partial_json || "";
+        if (turn.obBlocks[e.index]) turn.obBlocks[e.index].buf += d.partial_json || "";
+      }
+    }
+    if (e.type === "content_block_stop" && turn.toolInputs[e.index]) {
+      const tool = turn.toolInputs[e.index];
+      delete turn.toolInputs[e.index];
+      if (tool.buf) turnState.event("tool_input", { tool: tool.name, input: tool.buf });
     }
     if (e.type === "content_block_stop" && turn.obBlocks[e.index]) {
       const b = turn.obBlocks[e.index];
@@ -328,6 +579,21 @@ function handleEvent(ev) {
       if (args && args !== "{}") turn.sse?.thinking(`→ ${b.name} ${trunc(args, OB_TRACE_ARG_MAX)}\n`);
     }
     return;
+  }
+  if (ev.type === "user") {
+    const cont = ev.message?.content;
+    if (Array.isArray(cont)) for (const block of cont) {
+      if (block.type !== "tool_result") continue;
+      const toolName = turn.toolNames.get(block.tool_use_id) || "unknown-tool";
+      turn.toolNames.delete(block.tool_use_id);
+      const resultText = typeof block.content === "string" ? block.content
+        : Array.isArray(block.content) ? block.content.map((x) => x.text || "").join(" ") : "";
+      turnState.event("tool_result", {
+        tool: toolName,
+        status: block.is_error === true ? "error" : "returned",
+        result: resultText.replace(/\s+/g, " ").trim(),
+      });
+    }
   }
   // 安全阀:当前 OB 的 grow 成功返回包含 `N条|新C合M batch:g_xxx`；只有
   // C+M>0 才算真正落盘。兼容 archive_session 的 🗄️ 标记。与 OB_TRACE 无关。
@@ -366,7 +632,16 @@ function handleEvent(ev) {
       windowTokens = turn.peakPrefix;
       checkWindowUsage();
     }
-    if (ev.subtype && ev.subtype !== "success") {
+    turnState.event("result", { subtype: ev.subtype || "success" });
+    if (turn.interruptRequestedAt) {
+      clearInterruptGrace(turn);
+      const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
+      if (interactive) {
+        const warning = `${turn.fullText ? "\n\n" : ""}⚠️〔本轮已中止〕驻留会话仍保留。若刚才调用了论坛、邮箱等工具，请先确认动作是否已经完成，再决定是否重发。`;
+        turn.fullText += warning;
+        turn.sse?.text(warning);
+      }
+    } else if (ev.subtype && ev.subtype !== "success") {
       log("[result-error]", ev.subtype);
       if (!turn.fullText) turn.sse?.text(`⚠️[shim] ${ev.subtype}`);
     }
@@ -389,31 +664,44 @@ function handleEvent(ev) {
     }
     const usage = ev.usage ? { output_tokens: ev.usage.output_tokens } : undefined;
     const doKill = wantSwitch && archivedOk && proc;
+    const replayable = (!ev.subtype || ev.subtype === "success") && !turn.interruptRequestedAt;
     turn.done = true;
     turnWatchdog.disarm(turn);
-    turn.sse?.finish(usage, turn.fullText);
+    finishTurnDelivery(turn, usage, turn.interruptRequestedAt ? "interrupted" : "completed", replayable);
+    snapshotNativeSessionSoon();
     turn = null;
     busy = false;
     if (doKill) {
       log("[window] archived ok, restarting proc");
-      skipHistoryOnNextSpawn = true; // 主动换窗后不要把 Kelivo 旧聊天重新灌进新窗口
+      skipHistoryOnNextSpawn = true; // 外部主动换 session 后不要把 Kelivo 旧聊天灌回去
+      forceFreshSession = true;
+      clearSessionState(SESSION_STATE_FILE);
+      nativeSessionId = null;
+      nativeSessionFingerprint = null;
+      nativeSessionResumed = false;
       const old = proc; proc = null;
       try { old.kill(); } catch {}
     }
-    pump();
+    if (shuttingDown) finishShutdown();
+    else pump();
   }
 }
 
 // ---- 队列 / 喂消息 -----------------------------------------------------------
 function enqueue(item) { queue.push(item); pump(); }
 function pump() {
-  if (busy || !queue.length) return;
+  if (shuttingDown || busy || !queue.length) return;
   const item = queue.shift();
   busy = true;
 
   // 世界书或模型变了就重启进程再喂(让新设定/新模型生效)
   const wantModel = item.model || spawnedModel;
   if (proc && (item.system !== spawnedSystem || wantModel !== spawnedModel)) {
+    forceFreshSession = true;
+    clearSessionState(SESSION_STATE_FILE);
+    nativeSessionId = null;
+    nativeSessionFingerprint = null;
+    nativeSessionResumed = false;
     const old = proc; proc = null;
     try { old.kill(); } catch {}
   }
@@ -435,8 +723,17 @@ function pump() {
   turn = {
     sse: item.sse, fullText: "", newWindow: !!item.newWindow, obBlocks: {}, archiveOk: false,
     peakPrefix: 0, autoArchive: !!item.autoArchive, src: item.src || "unknown",
-    startedAt: Date.now(), lastActivityAt: Date.now(), done: false,
+    startedAt: Date.now(), lastActivityAt: Date.now(), done: false, interruptTimer: null,
+    item, requestKey: item.requestKey || null,
+    toolNames: new Map(), toolInputs: {},
   };
+  turnState.begin({
+    requestKey: turn.requestKey,
+    source: turn.src,
+    input: item.text,
+    model: wantModel,
+    sessionId: nativeSessionId,
+  });
   turnWatchdog.arm(turn);
   const content = item.images && item.images.length
     ? [{ type: "text", text }, ...item.images]
@@ -445,39 +742,22 @@ function pump() {
 }
 
 // ---- Anthropic SSE 合成 ------------------------------------------------------
-function makeSSE(res) {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  const msgId = "msg_" + randomUUID().replace(/-/g, "").slice(0, 24);
-  let started = false, cur = null, idx = -1;
-
-  function ensureStart() {
-    if (started) return; started = true;
-    send("message_start", { type: "message_start", message: { id: msgId, type: "message", role: "assistant", model: spawnedModel, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
-  }
-  function open(kind) {
-    if (cur === kind) return; close();
-    idx += 1; cur = kind;
-    const cb = kind === "thinking" ? { type: "thinking", thinking: "" } : { type: "text", text: "" };
-    send("content_block_start", { type: "content_block_start", index: idx, content_block: cb });
-  }
-  function close() { if (cur === null) return; send("content_block_stop", { type: "content_block_stop", index: idx }); cur = null; }
-
-  return {
-    text(t) { ensureStart(); open("text"); send("content_block_delta", { type: "content_block_delta", index: idx, delta: { type: "text_delta", text: t } }); },
-    thinking(t) { if (!FORWARD_THINKING || !t) return; ensureStart(); open("thinking"); send("content_block_delta", { type: "content_block_delta", index: idx, delta: { type: "thinking_delta", thinking: t } }); },
-    finish(usage) { ensureStart(); close(); send("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: usage || { output_tokens: 0 } }); send("message_stop", { type: "message_stop" }); try { res.end(); } catch {} },
-  };
+function makeSSE(res, model = spawnedModel) {
+  return createAnthropicSSE(res, {
+    model,
+    forwardThinking: FORWARD_THINKING,
+    heartbeatMs: SSE_HEARTBEAT_MS,
+  });
 }
 
 // 非流式收集器(同接口,finish 时一次性返回 JSON)
-function makeCollector(res) {
+function makeCollector(res, model = spawnedModel) {
   return {
+    isConnected() { return !res.headersSent && !res.writableEnded && !res.destroyed; },
     text() {}, thinking() {},
     finish(usage, fullText) {
-      res.json({ id: "msg_" + randomUUID().replace(/-/g, "").slice(0, 24), type: "message", role: "assistant", model: spawnedModel, content: [{ type: "text", text: fullText || "" }], stop_reason: "end_turn", stop_sequence: null, usage: usage || { input_tokens: 0, output_tokens: 0 } });
+      res.json({ id: "msg_" + randomUUID().replace(/-/g, "").slice(0, 24), type: "message", role: "assistant", model, content: [{ type: "text", text: fullText || "" }], stop_reason: "end_turn", stop_sequence: null, usage: usage || { input_tokens: 0, output_tokens: 0 } });
+      return true;
     },
   };
 }
@@ -498,7 +778,9 @@ function extractImages(messages) {
 
 const app = express();
 app.use(express.json({ limit: "100mb" }));
-app.get("/health", (_q, r) => r.json({ ok: true, model: spawnedModel, models: MODELS, busy, queued: queue.length }));
+app.get("/health", (_q, r) => r.json({
+  ok: !shuttingDown, model: spawnedModel, models: MODELS, busy, queued: queue.length, shuttingDown,
+}));
 app.get("/debug", (_q, r) => r.json({
   cache1h: process.env.ENABLE_PROMPT_CACHING_1H || "unset", lastUsage,
   window: {
@@ -516,15 +798,31 @@ app.get("/debug", (_q, r) => r.json({
     lastAt: lastRecoveryAt ? new Date(lastRecoveryAt).toISOString() : null,
     messages: lastRecoveryMessages, chars: lastRecoveryChars,
   },
+  session: {
+    enabled: SESSION_RESUME,
+    idSuffix: nativeSessionId ? nativeSessionId.slice(-8) : null,
+    resumed: nativeSessionResumed,
+    confirmed: !!proc?.kelivoSessionConfirmed,
+    recoveryMode: lastNativeRecoveryMode,
+    recoveryAt: lastNativeRecoveryAt ? new Date(lastNativeRecoveryAt).toISOString() : null,
+  },
+  stream: { heartbeatMs: SSE_HEARTBEAT_MS },
+  delivery: {
+    ...turnState.debug(),
+    inflight: inflightTurns.size,
+  },
   watchdog: {
     enabled: TURN_TIMEOUT_MS > 0,
     timeoutMs: TURN_TIMEOUT_MS,
+    interruptGraceMs: TURN_INTERRUPT_GRACE_MS,
     active: !!turn,
+    interruptPending: !!turn?.interruptRequestedAt,
     source: turn?.src || null,
     startedAt: turn?.startedAt ? new Date(turn.startedAt).toISOString() : null,
     lastActivityAt: turn?.lastActivityAt ? new Date(turn.lastActivityAt).toISOString() : null,
     lastTimeoutAt: lastTurnTimeoutAt ? new Date(lastTurnTimeoutAt).toISOString() : null,
     lastTimeoutSource: lastTurnTimeoutSource,
+    lastInterruptAt: lastTurnInterruptAt ? new Date(lastTurnInterruptAt).toISOString() : null,
   },
   voice: { ready: voiceReady(), model: voiceCfg.modelId, settings: voiceSettingsOf(voiceCfg) },
   ears: { ready: earsReady(), auth: !!EARS_TOKEN },   // 语音消息能否听出语气
@@ -532,6 +830,9 @@ app.get("/debug", (_q, r) => r.json({
   wake: {
     bark: !!BARK_KEY,
     tg: !!TG_TOKEN, tgLocked: !!tgChatId,
+    activeHoursBeijing: "08:00-24:00",
+    checkMin: WAKE_CHECK_MIN,
+    idleMin: WAKE_IDLE_MIN,
     lastUserAt: new Date(lastUserAt).toISOString(),
     lastTurnAt: new Date(lastTurnAt).toISOString(),
     lastSpokeAt: lastSpokeAt ? new Date(lastSpokeAt).toISOString() : null,
@@ -539,15 +840,14 @@ app.get("/debug", (_q, r) => r.json({
 }));
 
 // ---- 自主时间:定时唤醒,AI 自己决定说话还是静默续命 ----------------------------
-// 升级自旧「主动心跳」:不再区分昼夜(手机端自有勿扰/睡眠模式),不设硬冷却,
-// 频率交给他自己把握(提示里告知距上次开口多久)。距离上一轮对话(任何 turn,
-// 含唤醒轮)超过 WAKE_IDLE_MIN 分钟就喂一条【系统·自主时间】:
+// 只在北京时间 08:00-24:00 运行,夜间不向 Claude 发任何自主提示。距离上一轮
+// 对话(任何 turn,含唤醒轮)超过 WAKE_IDLE_MIN 分钟才喂一条【系统·自主时间】:
 //   想说话 → Bark 推送到手机(Kelivo 里看不到,但常驻进程自己记得,回来自然接上)
-//   没话说 → 只回【沉默】= 最小开销续命:赶在 1 小时提示词缓存过期前刷新一轮,
-//            上下文与缓存全天连续,夜里也不断线。
+//   没话说 → 只回【沉默】。这仍是一轮真实 Claude 调用,所以严格限制到白天且
+//            每轮之间至少间隔一小时。
 const BARK_KEY = process.env.BARK_KEY || "";
-const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 10); // 检查频率
-const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 50);   // 空闲阈值,略小于缓存 TTL(60min)
+const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 5);  // 只检查本地状态,不会调用 Claude
+const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 60);   // 两次自主轮至少间隔一小时
 let lastUserAt = Date.now();
 let lastTurnAt = Date.now();  // 任何一轮完成都会刷新缓存 TTL(handleEvent result 里更新)
 let lastSpokeAt = 0;          // 上次真的主动开口(推送出去)的时刻
@@ -587,7 +887,8 @@ function wakeTurn(idleUserMin) {
   });
 }
 function wakeTick(force) {
-  const idleTurnMs = Date.now() - lastTurnAt;
+  const nowMs = Date.now();
+  const idleTurnMs = nowMs - lastTurnAt;
   const status = autonomousWakeStatus({
     hasProcess: !!proc,
     busy,
@@ -595,6 +896,7 @@ function wakeTick(force) {
     needsHistory: procNeedsHistory,
     idleTurnMs,
     idleThresholdMs: WAKE_IDLE_MIN * 60000,
+    withinWakeWindow: isBeijingWakeWindow(nowMs),
     force,
   });
   if (!status.triggered) {
@@ -707,7 +1009,7 @@ async function tgSendBubbles(text) {
 const EL_KEY = process.env.ELEVENLABS_API_KEY || "";
 
 // 音色与渲染配方:**运行时可改,不必重启**。
-// 为什么要这样:改 Zeabur 环境变量会重启容器 = 换窗口。而挑音色、调语速这种事
+// 为什么要这样:改 Zeabur 环境变量会重启容器。而挑音色、调语速这种事
 // 天然要反复试听微调,每试一次换一次窗口的代价无法接受。所以配置存在
 // /persona/voice.json(持久卷,换容器不丢),用 POST /voice 热改,即时生效。
 // 优先级:voice.json > 环境变量 > 代码默认。
@@ -1096,34 +1398,25 @@ function timeStamp(prevUserAt) {
   return s + "】";
 }
 
-// 意图识别:只有「换窗口/开新窗口」= 归档+换窗;「归档/晚安」= 只归档、窗口不动;其余不识别。
-// ⚠️不再注入任何"假系统指令"——沈渡按人设里和栖栖的约定,听她的话自己归档。
-const SWITCH_WORDS = ["换窗口", "开新窗口"];  // 归档并重启窗口(仅这两个词)
-const ARCHIVE_WORDS = ["归档", "晚安"];        // 只归档,窗口不动
-function stripEnds(s) { return (s || "").trim().replace(/^[\s，,。.!！~～、]+|[\s，,。.!！~～、]+$/g, ""); }
-function detectReset(text) {
-  const t = stripEnds(text);
-  for (const w of SWITCH_WORDS) { if (t === w || (t.length <= 8 && t.includes(w))) return "switch"; }
-  for (const w of ARCHIVE_WORDS) { if (t === w || (t.length <= 6 && t.includes(w))) return "archive"; }
-  return null;
-}
-
-// Kelivo 与 Telegram 共用的进队逻辑:意图识别 → 时间戳 → enqueue
+// 聊天内容永远不触发换 session。「换窗口」也只是她说给对方听的一句话,shim 不偷听成
+// 运维命令。想换人由聊天外的操作完成(例如切换模型);日常故障则优先续接原 session。
+// Kelivo 与 Telegram 共用的进队逻辑:时间戳 → enqueue
 function submitTurn(text, images, sink, opts = {}) {
-  const reset = images.length ? null : detectReset(text);
-  // 只有 switch 才重启窗口;archive/无 都不重启。归档动作交给沈渡自己按约定完成。
-  const newWindow = reset === "switch";
-  // 时间戳在意图识别之后注入,否则"归档/晚安"这类短词会被时间戳前缀顶掉认不出
+  const newWindow = false;
   if (TIME_STAMP) text = `${timeStamp(lastUserAt)}\n${text}`;
   lastUserAt = Date.now(); // 自主时间空闲计时基准
-  log("[turn]", { src: opts.src || "kelivo", len: text.length, imgs: images.length, reset: reset || "-" });
+  log("[turn]", { src: opts.src || "kelivo", len: text.length, imgs: images.length });
   enqueue({
     text, images, system: opts.system ?? spawnedSystem, sse: sink, newWindow,
     model: opts.model || spawnedModel, recovery: opts.recovery, src: opts.src || "kelivo",
+    requestKey: opts.requestKey || null,
   });
 }
 
 function handleMessages(req, res) {
+  if (shuttingDown) return res.status(503).json({
+    type: "error", error: { type: "overloaded_error", message: "shim is restarting; retry shortly" },
+  });
   if (SHIM_KEY) {
     const key = req.get("x-api-key") || (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
     if (key !== SHIM_KEY) return res.status(401).json({ type: "error", error: { type: "authentication_error", message: "bad key" } });
@@ -1139,7 +1432,8 @@ function handleMessages(req, res) {
   // 在这里本地完成，既隔离 resident process，也省掉一次模型调用。
   if (isKelivoTitleRequest(text)) {
     const title = localTitleForRequest(text);
-    const sink = stream ? makeSSE(res) : makeCollector(res);
+    const titleModel = MODELS.includes(body.model) ? body.model : spawnedModel;
+    const sink = stream ? makeSSE(res, titleModel) : makeCollector(res, titleModel);
     const usage = { input_tokens: 0, output_tokens: Array.from(title).length };
     sink.text(title);
     sink.finish(usage, title);
@@ -1149,18 +1443,82 @@ function handleMessages(req, res) {
 
   const images = extractImages(messages);
   const recovery = recoveryTranscript(messages, {
-    maxMessages: +(process.env.REHYDRATE_MAX_MESSAGES || 128),
-    maxChars: +(process.env.REHYDRATE_MAX_CHARS || 240000),
+    maxMessages: process.env.REHYDRATE_MAX_MESSAGES,
+    maxChars: REHYDRATE_MAX_CHARS,
   });
   const system = systemToText(body.system);
   // Kelivo 选的模型;不在名单里(或没传)就沿用当前模型
   const model = MODELS.includes(body.model) ? body.model : spawnedModel;
-  const sse = stream ? makeSSE(res) : makeCollector(res);
-  submitTurn(text, images, sse, { system, model, src: "kelivo", recovery });
+  const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
+  const requestKey = requestFingerprint({ messages, system, model });
+  const existing = inflightTurns.get(requestKey);
+  if (existing) {
+    existing.add(sse);
+    log("[delivery] identical request reattached to active turn", requestKey.slice(0, 8));
+    return;
+  }
+  const missed = turnState.findReplay(requestKey);
+  if (missed) {
+    log("[delivery] replaying completed response from mailbox", requestKey.slice(0, 8));
+    sse.text?.(missed.fullText);
+    const delivered = sse.isConnected?.() !== false;
+    sse.finish?.(missed.usage || undefined, missed.fullText);
+    if (delivered) turnState.markReplayed(requestKey);
+    return;
+  }
+  const delivery = new ReplayableDelivery(sse);
+  inflightTurns.set(requestKey, delivery);
+  submitTurn(text, images, delivery, { system, model, src: "kelivo", recovery, requestKey });
 }
 
 // Kelivo 的 Claude 类型 Base URL 填 /v1 会拼成 /v1/messages;填根则是 /messages。两个都接。
 app.post("/v1/messages", handleMessages);
 app.post("/messages", handleMessages);
 
-app.listen(PORT, () => log(`kelivo-shim on :${PORT} model=${MODEL} thinking=${FORWARD_THINKING}`));
+function finishShutdown() {
+  if (shutdownFinishing) return;
+  shutdownFinishing = true;
+  if (shutdownTimer) clearTimeout(shutdownTimer);
+  turnState.flush();
+  const old = proc;
+  proc = null;
+  try { old?.kill("SIGTERM"); } catch {}
+  const exitTimer = setTimeout(() => {
+    try { if (old?.exitCode === null) old.kill("SIGKILL"); } catch {}
+    process.exit(0);
+  }, 1500);
+  exitTimer.unref?.();
+}
+
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("[shutdown] graceful stop requested", signal);
+  httpServer.close(() => { if (!turn) finishShutdown(); });
+
+  while (queue.length) {
+    const item = queue.shift();
+    try { item.sse?.text?.("⚠️〔服务正在重启〕这一轮尚未开始，请稍后重发。"); } catch {}
+    try { item.sse?.finish?.(undefined, "⚠️〔服务正在重启〕这一轮尚未开始，请稍后重发。"); } catch {}
+    if (item.requestKey) inflightTurns.delete(item.requestKey);
+  }
+  turnState.event("shutdown_requested", { signal });
+  turnState.flush();
+
+  if (!turn) return finishShutdown();
+  turnWatchdog.disarm(turn);
+  turn.interruptRequestedAt = Date.now();
+  turnState.mark("interrupting", { reason: "graceful-shutdown" });
+  try {
+    if (proc?.stdin?.writable && !proc.stdin.destroyed) {
+      proc.stdin.write(JSON.stringify(interruptControlRequest(randomUUID())) + "\n");
+    }
+  } catch {}
+  shutdownTimer = setTimeout(finishShutdown, 20_000);
+  shutdownTimer.unref?.();
+}
+
+const httpServer = app.listen(PORT, () =>
+  log(`kelivo-shim on :${PORT} model=${MODEL} thinking=${FORWARD_THINKING}`));
+process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.once("SIGINT", () => gracefulShutdown("SIGINT"));

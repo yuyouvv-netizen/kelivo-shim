@@ -2,8 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   autonomousWakeStatus,
+  DEFAULT_INTERRUPT_GRACE_MS,
   DEFAULT_TURN_TIMEOUT_MS,
+  interruptControlRequest,
+  interruptGraceMsFromEnv,
+  isBeijingWakeWindow,
+  MAX_INTERRUPT_GRACE_MS,
   MAX_TURN_TIMEOUT_MS,
+  MIN_INTERRUPT_GRACE_MS,
   MIN_TURN_TIMEOUT_MS,
   TurnWatchdog,
   turnTimeoutMsFromEnv,
@@ -48,6 +54,21 @@ test("turn timeout env uses a safe default and bounds", () => {
   assert.equal(turnTimeoutMsFromEnv("0"), 0);
   assert.equal(turnTimeoutMsFromEnv("1"), MIN_TURN_TIMEOUT_MS);
   assert.equal(turnTimeoutMsFromEnv(String(MAX_TURN_TIMEOUT_MS * 2)), MAX_TURN_TIMEOUT_MS);
+});
+
+test("interrupt grace defaults to a continuity-first full minute and stays bounded", () => {
+  assert.equal(interruptGraceMsFromEnv(undefined), DEFAULT_INTERRUPT_GRACE_MS);
+  assert.equal(interruptGraceMsFromEnv("bad"), DEFAULT_INTERRUPT_GRACE_MS);
+  assert.equal(interruptGraceMsFromEnv("1"), MIN_INTERRUPT_GRACE_MS);
+  assert.equal(interruptGraceMsFromEnv(String(MAX_INTERRUPT_GRACE_MS * 2)), MAX_INTERRUPT_GRACE_MS);
+});
+
+test("watchdog requests a Claude turn-only interrupt before process restart", () => {
+  assert.deepEqual(interruptControlRequest("req-1"), {
+    type: "control_request",
+    request_id: "req-1",
+    request: { subtype: "interrupt" },
+  });
 });
 
 test("completed turn is disarmed and cannot time out later", () => {
@@ -128,6 +149,16 @@ test("autonomous wake requires a recovered, idle resident process with an empty 
   });
 });
 
+test("autonomous wake runs only from 08:00 through 24:00 Beijing time", () => {
+  assert.equal(isBeijingWakeWindow(Date.parse("2026-08-08T00:00:00Z")), true); // 08:00
+  assert.equal(isBeijingWakeWindow(Date.parse("2026-08-08T15:59:59Z")), true); // 23:59
+  assert.equal(isBeijingWakeWindow(Date.parse("2026-08-08T16:00:00Z")), false); // 00:00
+  assert.equal(isBeijingWakeWindow(Date.parse("2026-08-08T23:59:59Z")), false); // 07:59
+  assert.deepEqual(wakeState({ withinWakeWindow: false }), {
+    triggered: false, waitingForHistory: false, reason: "quiet-hours",
+  });
+});
+
 test("forced wake bypasses only the idle threshold", () => {
   assert.deepEqual(wakeState({ idleTurnMs: 1000 }), {
     triggered: false, waitingForHistory: false, reason: "not-idle",
@@ -139,4 +170,5 @@ test("forced wake bypasses only the idle threshold", () => {
   assert.equal(wakeState({ needsHistory: true, force: true }).triggered, false);
   assert.equal(wakeState({ busy: true, force: true }).triggered, false);
   assert.equal(wakeState({ queueLength: 1, force: true }).triggered, false);
+  assert.equal(wakeState({ withinWakeWindow: false, force: true }).triggered, false);
 });

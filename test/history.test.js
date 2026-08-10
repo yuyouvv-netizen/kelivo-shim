@@ -51,3 +51,15 @@ test("字符上限保留靠近当前消息的尾部", () => {
   assert.match(history.text, /结尾/);
   assert.equal(history.truncated, true);
 });
+
+test("默认接收 Kelivo 实际提供的全部历史而不是只取最近 128 条", () => {
+  const prior = Array.from({ length: 150 }, (_, index) => ({
+    role: index % 2 ? "assistant" : "user",
+    content: `历史-${index}`,
+  }));
+  const history = recoveryTranscript([...prior, { role: "user", content: "当前" }]);
+  assert.equal(history.messages, 150);
+  assert.equal(history.truncated, false);
+  assert.match(history.text, /历史-0/);
+  assert.match(history.text, /历史-149/);
+});

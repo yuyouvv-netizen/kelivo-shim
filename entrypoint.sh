@@ -93,6 +93,24 @@ if [ -d /persona ]; then
   done
 fi
 
+# Claude Code 原生会话保全:CLI 的 transcript 默认写在 ~/.claude/projects,
+# 但容器根盘会随重建消失。把这一目录接到 /persona 持久卷后,shim 即使被看门狗
+# 重启、进程崩溃或容器滚动更新,也能用 `claude --resume <session-id>` 续接原会话。
+# 若镜像启动阶段已经产生过 projects,先做可恢复备份再接入,不静默删除。
+if [ -d /persona ]; then
+  CLAUDE_STATE_HOME="${HOME:-/root}/.claude"
+  PERSISTENT_CLAUDE_STATE="/persona/claude-state"
+  mkdir -p "$CLAUDE_STATE_HOME" "$PERSISTENT_CLAUDE_STATE/projects"
+  if [ ! -e "$CLAUDE_STATE_HOME/projects" ]; then
+    ln -s "$PERSISTENT_CLAUDE_STATE/projects" "$CLAUDE_STATE_HOME/projects"
+  elif [ -d "$CLAUDE_STATE_HOME/projects" ] && [ ! -L "$CLAUDE_STATE_HOME/projects" ]; then
+    cp -a "$CLAUDE_STATE_HOME/projects/." "$PERSISTENT_CLAUDE_STATE/projects/" 2>/dev/null || true
+    mv "$CLAUDE_STATE_HOME/projects" "$CLAUDE_STATE_HOME/projects.pre-persist.$$"
+    ln -s "$PERSISTENT_CLAUDE_STATE/projects" "$CLAUDE_STATE_HOME/projects"
+  fi
+  export SESSION_STATE_FILE="${SESSION_STATE_FILE:-$PERSISTENT_CLAUDE_STATE/shim-session.json}"
+fi
+
 # Trust the workspace so CLAUDE.md loads cleanly (permissions come from --allowedTools).
 printf '%s' '{"hasCompletedOnboarding":true,"projects":{"/src":{"hasTrustDialogAccepted":true,"hasCompletedProjectOnboarding":true}}}' > "${HOME:-/root}/.claude.json"
 

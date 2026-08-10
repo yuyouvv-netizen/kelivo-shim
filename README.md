@@ -4,10 +4,13 @@
 
 - 人设放服务端 CLAUDE.md,**不被 cloak 盖掉**,100% 生效
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
-- 长对话压缩前自动归档;服务重启后从 Kelivo 最近历史恢复,不再只记头尾
+- 长对话压缩前自动归档;异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底
 - Kelivo 自动标题在 shim 本地生成,不会串进常驻 Claude 的私人对话上下文
-- 单轮长时间无活动会自动解卡并重启驻留进程,后续消息从 Kelivo 历史恢复
-- 自主唤醒只复用已经恢复历史的常驻进程;部署或进程重启后会等第一条真实 Kelivo 消息恢复历史,`/hb` 强制触发也不会绕过这道保护
+- WebSearch/MCP 静默执行时持续发 SSE 心跳,避免“Claude 已搜完、Kelivo 却断流”
+- 单轮长时间无活动先只中止当前轮并宽限一分钟;无效才重启驻留进程并续接原生 session
+- 手机断线不取消后台轮次;同一句在三分钟内重新接入会续收进行中的回复或从短期回信箱取回原文
+- 卡住或进程中断后绝不自动重发用户消息;本轮可放弃,由用户决定是否重新询问
+- 自主唤醒只在北京时间 08:00-24:00、空闲满一小时后复用已恢复历史的常驻进程;夜间不触发,部署或进程重启后也会等第一条真实 Kelivo 消息恢复历史
 - 全云端,电脑不用开;走订阅,零 API 计费
 
 ```
@@ -29,9 +32,13 @@
 | 文件 | 说明 |
 |---|---|
 | `server.js` | shim 本体:Anthropic SSE ↔ 常驻 claude -p,含窗口保护、重启恢复、心跳、多模型、OB 调用透明化、Telegram 前端 |
-| `history.js` | 进程重启后的 Kelivo 历史恢复(主动换窗时自动禁用) |
+| `history.js` | 原生 session 全部失效后的 Kelivo 历史恢复兜底 |
+| `session-state.js` | Claude Code 原生 session 指针持久化、指纹校验与续接 |
+| `sse.js` | Anthropic SSE 合成、立即刷新响应头及静默期心跳 |
+| `delivery.js` | 手机断线后的同轮重连、部分文本重放与送达判断 |
+| `turn-state.js` | 当前轮事件日志、短期回信箱及相同请求指纹 |
 | `title.js` | 识别 Kelivo 后台标题请求并本地生成短标题,与常驻对话隔离 |
-| `turn-watchdog.js` | 单轮无活动超时看门狗,防止一次卡死永久堵住后续消息 |
+| `turn-watchdog.js` | 单轮无活动超时看门狗,先温和中止本轮、再按需重启 |
 | `window.js` | Claude Code 窗口用量计算与压缩阈值 |
 | `compact-instructions.js` | PreCompact 安全摘要钩子 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |

@@ -105,7 +105,7 @@ curl -X POST "https://<你的代理域名>.zeabur.app/v1/messages" \
 设计要点:
 - **单用户单进程**:上下文在进程里自动维持(自动 compact),Kelivo 发来的历史直接忽略
 - **人设在服务端**:CLAUDE.md 自动加载(支持 `@./文件.md` 导入),Kelivo 的世界书作为 system 用 `--append-system-prompt` 追加
-- **重置词**:说"晚安"→ 道晚安+归档+重启窗口;说"归档/换窗口"→ 直接归档重启
+- **聊天不是重置命令**:「晚安/归档/换窗口」都只作为普通对话送给 AI;主动换人从聊天外切换模型
 - **自主时间**:定时唤醒 AI,它自己决定给你发条 Bark 通知还是静默续命(顺带保持 1h 缓存不过期,全天上下文连续)
 - **思考链透传**:`thinking_delta` 原样转发,Kelivo 勾 reasoning 就能看
 
@@ -329,15 +329,20 @@ app.get("/models", listModels);
 
 // ---- 自主时间(可选;想推送到手机要 Bark,不配 Bark 则纯静默续命) ----
 const BARK_KEY = process.env.BARK_KEY || "";
-const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 10); // 检查频率
-const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 50);   // 空闲阈值,略小于缓存TTL(60min)
+const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 5);  // 本地检查频率
+const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 60);   // 两次自主轮至少间隔一小时
 let lastUserAt = Date.now(), lastTurnAt = Date.now(), lastSpokeAt = 0;
+const inBeijingWakeWindow = () => {
+  const hour = new Date(Date.now() + 8 * 3600e3).getUTCHours();
+  return hour >= 8 && hour < 24;
+};
 // 注意:handleEvent 的 result 分支里要加一行 lastTurnAt = Date.now()
 async function barkPush(text) {
   const r = await fetch("https://api.day.app/push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_key: BARK_KEY, title: AI_NAME, body: text.slice(0, 1800) }) });
   log("[bark]", r.status);
 }
 function wakeTick(force) {
+  if (!inBeijingWakeWindow()) return;
   if (busy || queue.length) return;
   if (!force && (Date.now() - lastTurnAt) / 60000 < WAKE_IDLE_MIN) return;
   const idleUserMin = Math.round((Date.now() - lastUserAt) / 60000);
@@ -379,17 +384,6 @@ app.get("/aw", (req, res) => {
   res.json({ now: new Date().toISOString(), count: cleaned.length, entries: cleaned.slice(-12) });
 });
 
-// ---- 重置词 ----
-const GOODNIGHT_WORDS = ["晚安"];
-const ARCHIVE_WORDS = ["归档", "换窗口", "开新窗口", "新窗口"];
-function stripEnds(s) { return (s || "").trim().replace(/^[\s，,。.!！~～、]+|[\s，,。.!！~～、]+$/g, ""); }
-function detectReset(text) {
-  const t = stripEnds(text);
-  for (const w of GOODNIGHT_WORDS) if (t === w || (t.length <= 6 && t.startsWith(w))) return "goodnight";
-  for (const w of ARCHIVE_WORDS) if (t === w || (t.length <= 8 && t.includes(w))) return "archive";
-  return null;
-}
-
 // ---- 主路由 ----
 function handleMessages(req, res) {
   if (SHIM_KEY) {
@@ -404,18 +398,11 @@ function handleMessages(req, res) {
   const system = systemToText(body.system);
   const stream = body.stream !== false;
 
-  const reset = images.length ? null : detectReset(text);
-  let newWindow = false;
-  if (reset === "goodnight") {
-    newWindow = true;
-    text = `${text}\n\n【系统·今天收尾】对方说晚安要睡了。先像平时那样简短道句晚安,然后(若挂了记忆工具)归档今天,之后不用多说。`;
-  } else if (reset === "archive") {
-    newWindow = true;
-    text = `【系统指令】立刻归档当前窗口(若挂了记忆工具),成功后只回一句「📦 归档好了,新窗口见」。`;
-  }
+  // 聊天内容不触发新 session;换模型等聊天外操作才会主动换人。
+  const newWindow = false;
 
   lastUserAt = Date.now();
-  log("[req]", { len: text.length, imgs: images.length, sysLen: system.length, stream, reset: reset || "-" });
+  log("[req]", { len: text.length, imgs: images.length, sysLen: system.length, stream });
   const sse = stream ? makeSSE(res) : makeCollector(res);
   enqueue({ text, images, system, sse, newWindow });
 }
@@ -500,13 +487,22 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `PORT` | `8080` | |
 | `USER_NAME` / `AI_NAME` | 你们的名字 | |
 | `BARK_KEY` | (可选)Bark的key | 自主时间推送用,见 §7 |
-| `WAKE_IDLE_MIN` | `50` | 自主时间空闲阈值(分钟),略小于缓存TTL;`WAKE_CHECK_MIN` 为检查频率(默认10) |
+| `WAKE_IDLE_MIN` | `60` | 北京时间08:00-24:00内的自主时间空闲阈值;`WAKE_CHECK_MIN` 为本地检查频率(默认5) |
 | `TG_BOT_TOKEN` | (可选)Telegram bot token | 启用 Telegram 前端:与 Kelivo 共用同一常驻进程,收发消息+自主发言直接进 TG 对话(bot 可主动开口,Kelivo 做不到)。@BotFather 创建 |
 | `TG_CHAT_ID` | (可选) | 预设 TG 会话;不设则第一个私聊自动锁定,之后只认这个人 |
 | `SOUL_ANCHOR` | (可选)覆盖默认会话定性锚点 | 对抗 claude -p 的助手腔/解离,代码已带默认值,见 §9 |
 | `TIME_STAMP` | `1`(默认开) | 每条消息开头注入【时间】行:北京时间+距上条消息间隔。AI 对时间的自估天天漂,记忆里的时间跟着错,这个直接喂真实时钟。`0` 关闭 |
 | `TIME_GAP_MIN` | `5` | 间隔小于这个分钟数时只给时间不报间隔,免得连发消息时啰嗦 |
-| `TURN_TIMEOUT_MS` | `300000`(默认5分钟无活动) | 单轮超过此时间没有任何新事件就自动结束卡死请求、重启驻留进程;设 `0` 关闭 |
+| `TURN_TIMEOUT_MS` | `300000`(默认5分钟无活动) | 单轮超过此时间没有新 Claude 事件时先温和中止当前轮;设 `0` 关闭 |
+| `TURN_INTERRUPT_GRACE_MS` | `60000` | 温和中止后再等多久;仍无结果才硬重启进程 |
+| `SSE_HEARTBEAT_MS` | `15000` | WebSearch/MCP 静默执行时的 SSE 心跳;设 `0` 关闭 |
+| `SESSION_RESUME` | `1` | 异常重启优先续接 Claude Code 原生 session;设 `0` 关闭 |
+| `SESSION_STATE_FILE` | `/persona/claude-state/shim-session.json` | 原生 session 指针;通常无需修改 |
+| `REHYDRATE_MAX_MESSAGES` | 不设置 | 原生 session 与校验副本均失败时,默认接收 Kelivo 提供的全部历史;设置数字才人为限条数 |
+| `REHYDRATE_MAX_CHARS` | 不设置 | 默认按 Claude Code 窗口的 60% 取恢复文本,为系统提示、工具和回复留余量 |
+| `TURN_STATE_DIR` | `/persona/turn-state` | 当前轮精确事件记录与断线回信箱 |
+| `MAILBOX_TTL_MS` | `1800000` | 原回复短期保留30分钟,同一句重发可直接取回 |
+| `SESSION_BACKUPS` | `1` | Claude 原生 transcript 最近一份校验备份;`0` 关闭 |
 | `ELEVENLABS_API_KEY` | (可选)ElevenLabs key | 启用 Telegram 语音:回复里 `[语音]English[/语音]` 段转原生语音条(sendVoice),失败自动降级发文字。需同时配 `ELEVENLABS_VOICE_ID`(Voice Design 产物;免费档不能走 API 用声音库社区声音) |
 | `ELEVENLABS_VOICE_ID` | (可选)voice id | 语音用的声音;换声音只改这个 |
 | `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2`(默认) | TTS 模型 |
@@ -531,15 +527,16 @@ Temperature / 上下文数量 / 思考预算 / 最大token / Prompt Caching开�
 
 ---
 
-## 5. 重置词(内建)
+## 5. 归档与主动换人
 
 | 你说 | 效果 |
 |---|---|
-| `晚安` | AI 道晚安 →(挂了记忆就)归档今天 → 重启窗口。一天收尾 |
-| `归档` / `换窗口` / `开新窗口` | 直接归档+重启,只回一句确认 |
+| `晚安` / `归档` | 作为普通对话交给 AI 按人设自然处理,不会自动重启 |
+| `换窗口` / `开新窗口` | 也只是普通对话,shim 不把它偷听成运维命令 |
+| 在 Kelivo 外部切换模型 | 主动开启新的 Claude session |
 
-重启后上下文清零(= 最省 token 的动作),记忆靠 MCP 记忆工具续上(没挂记忆就是纯新窗口)。
-**原窗口继续聊就行,不用新建对话**——AI 的连续性在服务端进程+记忆里,不在 Kelivo 的聊天记录里。
+日常卡顿或服务重启优先续接原 session;需要主动换人时从聊天外切换模型,不用把告别写进对话。
+AI 的连续性主要在服务端原生 session 与记忆里,不只依赖 Kelivo 的聊天记录。
 
 ---
 
@@ -562,7 +559,7 @@ Temperature / 上下文数量 / 思考预算 / 最大token / Prompt Caching开�
 1. App Store 装 **Bark**(免费),复制首页 URL 里的 key
 2. shim 环境变量加 `BARK_KEY=<你的key>`,重启(不配 Bark 也能开,只是纯静默续命)
 3. 默认行为:距上一轮对话(含唤醒轮)50 分钟 → AI 收到【自主时间】提示 → **它自己决定**发条通知(弹你锁屏)或只回【沉默】。两条路都会刷新 1 小时提示词缓存,上下文全天连续、夜里不断线。不区分昼夜——手机端用勿扰/睡眠模式自己控制;发言频率也交给 AI 自己把握(提示里会告知距上次开口多久)
-4. 成本:静默续命一轮 ≈ 一次便宜的缓存读(0.1×)+几个输出 token,每小时一轮;想省就调大 `WAKE_IDLE_MIN`(但超过 60 分钟缓存会过期,下轮要全价重写缓存,反而亏)
+4. 成本:每次自主轮都是一次真实 Claude 调用;默认只在北京时间08:00-24:00、空闲满一小时后触发,夜间完全不调用
 5. 测试:`curl -X POST "https://<shim域名>/hb?key=<SHIM_KEY>"` 强制触发一次
 
 注意:通知内容**不会**出现在 Kelivo 聊天记录里(Kelivo 收不了推送,天性),

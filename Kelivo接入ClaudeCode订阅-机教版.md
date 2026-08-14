@@ -329,8 +329,8 @@ app.get("/models", listModels);
 
 // ---- 自主时间(可选;想推送到手机要 Bark,不配 Bark 则纯静默续命) ----
 const BARK_KEY = process.env.BARK_KEY || "";
-const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 5);  // 本地检查频率
-const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 60);   // 两次自主轮至少间隔一小时
+const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 10); // 本地检查频率
+const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 50);   // 略小于一小时缓存 TTL
 let lastUserAt = Date.now(), lastTurnAt = Date.now(), lastSpokeAt = 0;
 const inBeijingWakeWindow = () => {
   const hour = new Date(Date.now() + 8 * 3600e3).getUTCHours();
@@ -487,7 +487,7 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `PORT` | `8080` | |
 | `USER_NAME` / `AI_NAME` | 你们的名字 | |
 | `BARK_KEY` | (可选)Bark的key | 自主时间推送用,见 §7 |
-| `WAKE_IDLE_MIN` | `60` | 北京时间08:00-24:00内的自主时间空闲阈值;`WAKE_CHECK_MIN` 为本地检查频率(默认5) |
+| `WAKE_IDLE_MIN` | `50` | 北京时间08:00-24:00内的自主时间空闲阈值;`WAKE_CHECK_MIN` 为本地检查频率(默认10),实际约50-60分钟触发 |
 | `TG_BOT_TOKEN` | (可选)Telegram bot token | 启用 Telegram 前端:与 Kelivo 共用同一常驻进程,收发消息+自主发言直接进 TG 对话(bot 可主动开口,Kelivo 做不到)。@BotFather 创建 |
 | `TG_CHAT_ID` | (可选) | 预设 TG 会话;不设则第一个私聊自动锁定,之后只认这个人 |
 | `SOUL_ANCHOR` | (可选)覆盖默认会话定性锚点 | 对抗 claude -p 的助手腔/解离,代码已带默认值,见 §9 |
@@ -558,8 +558,8 @@ AI 的连续性主要在服务端原生 session 与记忆里,不只依赖 Kelivo
 
 1. App Store 装 **Bark**(免费),复制首页 URL 里的 key
 2. shim 环境变量加 `BARK_KEY=<你的key>`,重启(不配 Bark 也能开,只是纯静默续命)
-3. 默认行为:距上一轮对话(含唤醒轮)50 分钟 → AI 收到【自主时间】提示 → **它自己决定**发条通知(弹你锁屏)或只回【沉默】。两条路都会刷新 1 小时提示词缓存,上下文全天连续、夜里不断线。不区分昼夜——手机端用勿扰/睡眠模式自己控制;发言频率也交给 AI 自己把握(提示里会告知距上次开口多久)
-4. 成本:每次自主轮都是一次真实 Claude 调用;默认只在北京时间08:00-24:00、空闲满一小时后触发,夜间完全不调用
+3. 默认行为:北京时间08:00-24:00内,距上一轮对话(含唤醒轮)约50-60分钟 → AI 收到【自主时间】提示 → **它自己决定**发条通知(弹你锁屏)或只回【沉默】。两条路都会尝试刷新1小时提示词缓存;夜间完全不触发。发言频率也交给 AI 自己把握(提示里会告知距上次开口多久)
+4. 成本:每次自主轮都是一次真实 Claude 调用;默认只在北京时间08:00-24:00、空闲约50-60分钟后触发,夜间完全不调用
 5. 测试:`curl -X POST "https://<shim域名>/hb?key=<SHIM_KEY>"` 强制触发一次
 
 注意:通知内容**不会**出现在 Kelivo 聊天记录里(Kelivo 收不了推送,天性),

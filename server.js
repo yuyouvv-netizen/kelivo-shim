@@ -844,10 +844,10 @@ app.get("/debug", (_q, r) => r.json({
 // 对话(任何 turn,含唤醒轮)超过 WAKE_IDLE_MIN 分钟才喂一条【系统·自主时间】:
 //   想说话 → Bark 推送到手机(Kelivo 里看不到,但常驻进程自己记得,回来自然接上)
 //   没话说 → 只回【沉默】。这仍是一轮真实 Claude 调用,所以严格限制到白天且
-//            每轮之间至少间隔一小时。
+//            默认约每 50-60 分钟一轮,尽量在一小时缓存过期前续上。
 const BARK_KEY = process.env.BARK_KEY || "";
-const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 5);  // 只检查本地状态,不会调用 Claude
-const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 60);   // 两次自主轮至少间隔一小时
+const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 10); // 只检查本地状态,不会调用 Claude
+const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 50);   // 略小于一小时缓存 TTL
 let lastUserAt = Date.now();
 let lastTurnAt = Date.now();  // 任何一轮完成都会刷新缓存 TTL(handleEvent result 里更新)
 let lastSpokeAt = 0;          // 上次真的主动开口(推送出去)的时刻

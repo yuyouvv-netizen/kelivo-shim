@@ -18,6 +18,16 @@ done
 
 unset ANTHROPIC_API_KEY   # subscription channel must win
 
+# 新账号直连保险:CLAUDE_CODE_OAUTH_TOKEN 是官方给 headless/自动环境使用的
+# 订阅凭据。旧部署仍保留 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN 作为可审计
+# 的历史配置,但 AUTH_TOKEN 的认证优先级更高;若不主动屏蔽,它会把请求送回旧代理。
+# 只要新 token 已配置,就让直连订阅明确胜出,且日志绝不打印任何凭据。
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  unset ANTHROPIC_AUTH_TOKEN
+  unset ANTHROPIC_BASE_URL
+  echo "[entrypoint] direct Claude subscription auth selected"
+fi
+
 # Voice fallback transcoder: only needed if ElevenLabs can't serve Ogg/Opus
 # directly (plan-gated formats) — then mp3 gets transcoded via ffmpeg.
 # Install is best-effort; without it opus-direct still works.

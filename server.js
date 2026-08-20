@@ -96,12 +96,12 @@ const SOUL_ANCHOR = process.env.SOUL_ANCHOR ?? [
 ].join("\n");
 
 // 省 token:--tools 只装真用的内置工具(Bash/Edit/Task 等大 schema 全砍,基线立减);
-// MCP 工具(ombre/fish/gmail/bird)不受 --tools 影响,走 mcp-config 照常加载。
+// MCP 工具(ombre/fish/gmail/toy)不受 --tools 影响,走 mcp-config 照常加载。
 const BUILTIN_TOOLS = process.env.BUILTIN_TOOLS ?? "WebSearch,WebFetch";
 const configuredAllowed = (process.env.ALLOWED_TOOLS ||
   ["WebSearch", "WebFetch", "mcp__ombre", "mcp__fish", "mcp__gmail"].join(","))
   .split(",").map((s) => s.trim()).filter(Boolean);
-if (process.env.BIRD_MCP_URL) configuredAllowed.push("mcp__bird");
+if (process.env.BIRD_MCP_URL) configuredAllowed.push("mcp__toy");
 const ALLOWED = [...new Set(configuredAllowed)].join(",");
 // 与 SOUL_ANCHOR 分开追加:即使部署端整段覆盖了 SOUL_ANCHOR,压缩续接规则也不会丢。
 const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ??

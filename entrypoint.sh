@@ -71,6 +71,28 @@ if [ ! -f .mcp.json ]; then
 JSON
 fi
 
+# 啵啵鸟 MCP:真实 URL(含私密路径)只放在 Zeabur 的 BIRD_MCP_URL 环境变量里。
+# 启动时合并进运行配置,并同步回 /persona 保险箱;日志不打印 URL。
+if [ -n "${BIRD_MCP_URL:-}" ]; then
+  if ! node -e '
+    const fs = require("fs");
+    const source = ".mcp.json";
+    const raw = process.env.BIRD_MCP_URL || "";
+    const url = new URL(raw);
+    if (url.protocol !== "https:") throw new Error("BIRD_MCP_URL must use https");
+    const j = JSON.parse(fs.readFileSync(source, "utf8"));
+    j.mcpServers ||= {};
+    j.mcpServers.bird = { type: "http", url: raw };
+    const next = JSON.stringify(j, null, 2) + "\n";
+    fs.writeFileSync(source, next);
+    if (fs.existsSync("/persona")) fs.writeFileSync("/persona/.mcp.json", next);
+  '; then
+    echo "[entrypoint] ERROR: invalid BIRD_MCP_URL or MCP config"
+    exit 1
+  fi
+  echo "[entrypoint] bird MCP configured"
+fi
+
 # --- 人设保险箱:根治白板 ------------------------------------------------------
 # 沈渡的人设(CLAUDE.md / profile-instructions.md / 渡-self-prompt-v5.md 等)存在持久卷
 # /persona 里。/src 是容器临时盘,换新容器/重建就没了——所以开机时若 /src 缺某个人设文件,

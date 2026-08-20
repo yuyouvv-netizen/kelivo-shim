@@ -82,7 +82,8 @@ if [ -n "${BIRD_MCP_URL:-}" ]; then
     if (url.protocol !== "https:") throw new Error("BIRD_MCP_URL must use https");
     const j = JSON.parse(fs.readFileSync(source, "utf8"));
     j.mcpServers ||= {};
-    j.mcpServers.bird = { type: "http", url: raw };
+    delete j.mcpServers.bird;
+    j.mcpServers.toy = { type: "http", url: raw };
     const next = JSON.stringify(j, null, 2) + "\n";
     fs.writeFileSync(source, next);
     if (fs.existsSync("/persona")) fs.writeFileSync("/persona/.mcp.json", next);
@@ -90,7 +91,7 @@ if [ -n "${BIRD_MCP_URL:-}" ]; then
     echo "[entrypoint] ERROR: invalid BIRD_MCP_URL or MCP config"
     exit 1
   fi
-  echo "[entrypoint] bird MCP configured"
+  echo "[entrypoint] toy MCP configured"
 fi
 
 # --- 人设保险箱:根治白板 ------------------------------------------------------

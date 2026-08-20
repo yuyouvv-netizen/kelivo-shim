@@ -361,6 +361,14 @@ function spawnClaude(kelivoSystem, model) {
   if (COMPACT_HOOK) args.push("--settings", compactSettingsArg());
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
+  // ANTHROPIC_AUTH_TOKEN outranks CLAUDE_CODE_OAUTH_TOKEN in Claude Code.
+  // When the new account's long-lived OAuth token exists, never let a stale
+  // gateway credential/base URL silently route this resident process back to
+  // the retired proxy (or its old account).
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) {
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.ANTHROPIC_BASE_URL;
+  }
   env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(AUTO_COMPACT_WINDOW);
   windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
   compactions = 0; lastCompactAt = null; lastCompactPre = 0;

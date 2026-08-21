@@ -11,6 +11,7 @@ export const GMAIL_SCOPES = [
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const FLOW_TTL_MS = 15 * 60 * 1000;
+const GMAIL_MIGRATION_VERSION = 2;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -144,7 +145,7 @@ export function writeCredentialsSafely(credentialsFile, markerFile, credentials,
   try {
     fs.writeFileSync(credentialsTemp, JSON.stringify(credentials) + "\n", { encoding: "utf8", mode: 0o600 });
     fs.chmodSync(credentialsTemp, 0o600);
-    fs.writeFileSync(markerTemp, JSON.stringify({ completedAt: now.toISOString() }) + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(markerTemp, JSON.stringify({ completedAt: now.toISOString(), migrationVersion: GMAIL_MIGRATION_VERSION }) + "\n", { encoding: "utf8", mode: 0o600 });
     fs.chmodSync(markerTemp, 0o600);
 
     if (malformedBackup) {
@@ -186,6 +187,15 @@ export function writeCredentialsSafely(credentialsFile, markerFile, credentials,
   }
 }
 
+function completedCurrentMigration(credentialsFile, markerFile) {
+  if (!fs.existsSync(credentialsFile) || !fs.lstatSync(credentialsFile).isFile() || !fs.existsSync(markerFile)) return false;
+  try {
+    return JSON.parse(fs.readFileSync(markerFile, "utf8"))?.migrationVersion === GMAIL_MIGRATION_VERSION;
+  } catch {
+    return false;
+  }
+}
+
 function loginPage(message = "") {
   return page("Gmail 换到新邮箱", `<h1>Gmail 换到新邮箱</h1><p>只替换 Gmail MCP 的邮箱授权，不会改动 Claude、花园、Ombre 或啵啵鸟。</p>${message ? `<p class="err">${escapeHtml(message)}</p>` : ""}<form method="post" action="${GMAIL_OAUTH_BASE_PATH}/login" autocomplete="off"><label for="key">SHIM_KEY</label><input id="key" name="key" type="password" required autocomplete="off"><button type="submit">进入换号页</button></form><p class="muted">密钥只提交给你自己的 Zeabur 服务。</p>`);
 }
@@ -214,10 +224,13 @@ export function registerGmailOauthAdmin(app, {
   restart = () => process.kill(process.pid, "SIGTERM"),
   log = (...args) => console.log(...args),
 } = {}) {
-  if (!shimKey) return { enabled: false, reason: "missing-shim-key" };
-  // A marker only counts as complete when credentials.json is a real file.
-  // This keeps the protected recovery page available after a malformed restore.
-  if (fs.existsSync(markerFile) && fs.existsSync(credentialsFile) && fs.lstatSync(credentialsFile).isFile()) {
+  if (!shimKey) {
+    app.get(GMAIL_OAUTH_BASE_PATH, (_req, res) => res.status(503).type("html").send(page("Gmail 换号尚未开放", "<h1>Gmail 换号尚未开放</h1><p>当前服务没有读取到 SHIM_KEY。请只检查环境变量名称，不要把密钥发到聊天里。</p>")));
+    return { enabled: false, reason: "missing-shim-key", path: GMAIL_OAUTH_BASE_PATH };
+  }
+  // Only this migration version can close the one-time page. Old/stale markers
+  // and malformed credential paths remain recoverable behind SHIM_KEY.
+  if (completedCurrentMigration(credentialsFile, markerFile)) {
     return { enabled: false, reason: "migration-complete" };
   }
   if (typeof urlencoded !== "function" || typeof json !== "function" || typeof fetchImpl !== "function") throw new Error("gmail OAuth admin dependencies missing");

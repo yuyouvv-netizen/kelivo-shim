@@ -14,6 +14,11 @@ const OFFICIAL_AUTH_ENDPOINTS = new Set([
   "platform.claude.com/oauth/authorize",
   "claude.com/cai/oauth/authorize",
 ]);
+const TOKEN_OUTPUT_MARKER = "Your OAuth token (valid for 1 year):";
+const TOKEN_OUTPUT_END_MARKERS = [
+  "Store this token securely.",
+  "Use this token by setting:",
+];
 
 function stripAnsi(value) {
   return String(value || "")
@@ -34,7 +39,23 @@ export function extractClaudeOauthUrl(value) {
 }
 
 export function extractClaudeSetupToken(value) {
-  return stripAnsi(value).match(TOKEN_RE)?.[0] || null;
+  const clean = stripAnsi(value);
+  // Claude Code 2.1.x may hard-wrap the one-time token across terminal lines.
+  // Reassemble only the text bounded by Claude's own token label and warning;
+  // never guess a token from arbitrary output or from a fixed token length.
+  const markerAt = clean.lastIndexOf(TOKEN_OUTPUT_MARKER);
+  if (markerAt < 0) return clean.match(TOKEN_RE)?.[0] || null;
+  const afterMarker = clean.slice(markerAt + TOKEN_OUTPUT_MARKER.length);
+  const prefixAt = afterMarker.indexOf("sk-ant-oat01-");
+  if (prefixAt < 0) return null;
+  let bounded = afterMarker.slice(prefixAt);
+  const ends = TOKEN_OUTPUT_END_MARKERS
+    .map((marker) => bounded.indexOf(marker))
+    .filter((index) => index >= 0);
+  if (!ends.length) return null;
+  bounded = bounded.slice(0, Math.min(...ends));
+  const candidate = bounded.replace(/[\s│┌┐└┘─]+/g, "");
+  return /^sk-ant-oat01-[A-Za-z0-9_-]{40,256}$/.test(candidate) ? candidate : null;
 }
 
 export async function writeClaudeAuthorizationCode(stdin, code, mode, {
@@ -236,8 +257,8 @@ export function registerClaudeOauthAdmin(app, {
     usePty = usePty && fs.existsSync(ptyHelper);
     const program = usePty ? ptyHelper : claudeBin;
     const args = usePty
-      ? ["-qefc", `stty cols 5000 rows 40 -echo; exec ${shellQuote(claudeBin)} setup-token`, "/dev/null"]
-      : ["setup-token"];
+      ? ["-qefc", `stty cols 5000 rows 40 -echo; exec ${shellQuote(claudeBin)} --ax-screen-reader setup-token`, "/dev/null"]
+      : ["--ax-screen-reader", "setup-token"];
     const child = spawn(program, args, { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
     state.child = child;
     state.mode = usePty ? "pty" : "pipe";

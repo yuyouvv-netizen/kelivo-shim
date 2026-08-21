@@ -9,6 +9,7 @@ import {
   buildGoogleAuthUrl,
   credentialsFromTokenResponse,
   parseGoogleCallback,
+  resolveGoogleOauthKeysFile,
   writeCredentialsSafely,
 } from "./gmail-oauth-admin.js";
 
@@ -68,4 +69,15 @@ test("new credentials are installed only with a private backup and completion ma
   assert.equal(fs.statSync(credentialsFile).mode & 0o777, 0o600);
   assert.equal(fs.statSync(path.join(dir, "credentials.previous.json")).mode & 0o777, 0o600);
   assert.equal(fs.statSync(markerFile).mode & 0o777, 0o600);
+});
+
+test("OAuth client discovery accepts the restored runtime location", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-keys-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const restored = path.join(dir, ".gmail-mcp", "gcp-oauth.keys.json");
+  fs.mkdirSync(path.dirname(restored), { recursive: true });
+  fs.writeFileSync(restored, "{}");
+
+  assert.equal(resolveGoogleOauthKeysFile("/missing/configured-file.json", dir), restored);
+  assert.equal(resolveGoogleOauthKeysFile(path.join(dir, "missing.json"), path.join(dir, "other-home")), path.join(dir, "missing.json"));
 });

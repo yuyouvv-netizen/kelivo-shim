@@ -115,6 +115,16 @@ async function exchangeAndVerify({ code, clientId, clientSecret, fetchImpl, redi
   return { credentials, email: String(profile.emailAddress) };
 }
 
+export function resolveGoogleOauthKeysFile(configuredFile, homeDir = process.env.HOME || "/root") {
+  const candidates = [
+    configuredFile,
+    "/persona/gmail-auth/gcp-oauth.keys.json",
+    "/src/gmail-auth/gcp-oauth.keys.json",
+    path.join(homeDir, ".gmail-mcp", "gcp-oauth.keys.json"),
+  ];
+  return [...new Set(candidates.filter(Boolean))].find((file) => fs.existsSync(file)) || configuredFile;
+}
+
 export function writeCredentialsSafely(credentialsFile, markerFile, credentials, now = new Date()) {
   fs.mkdirSync(path.dirname(credentialsFile), { recursive: true });
   fs.mkdirSync(path.dirname(markerFile), { recursive: true });
@@ -193,7 +203,6 @@ export function registerGmailOauthAdmin(app, {
 } = {}) {
   if (!shimKey) return { enabled: false, reason: "missing-shim-key" };
   if (fs.existsSync(markerFile)) return { enabled: false, reason: "migration-complete" };
-  if (!fs.existsSync(oauthKeysFile)) return { enabled: false, reason: "missing-oauth-keys" };
   if (typeof urlencoded !== "function" || typeof json !== "function" || typeof fetchImpl !== "function") throw new Error("gmail OAuth admin dependencies missing");
 
   const sessions = new Map();
@@ -264,7 +273,7 @@ export function registerGmailOauthAdmin(app, {
 
   app.post(`${GMAIL_OAUTH_BASE_PATH}/start`, requireSession, requireCsrf, (_req, res) => {
     try {
-      const client = readGoogleOauthClient(oauthKeysFile);
+      const client = readGoogleOauthClient(resolveGoogleOauthKeysFile(oauthKeysFile));
       const state = randomBytes(32).toString("base64url");
       Object.assign(flow, { status: "waiting_callback", authUrl: buildGoogleAuthUrl({ clientId: client.clientId, state }), state, startedAt: Date.now(), error: null, email: null });
       res.status(202).json({ ok: true });
@@ -279,7 +288,7 @@ export function registerGmailOauthAdmin(app, {
     flow.status = "exchanging";
     try {
       const code = parseGoogleCallback(req.body?.callbackUrl, flow.state);
-      const client = readGoogleOauthClient(oauthKeysFile);
+      const client = readGoogleOauthClient(resolveGoogleOauthKeysFile(oauthKeysFile));
       const result = await exchangeAndVerify({ code, clientId: client.clientId, clientSecret: client.clientSecret, fetchImpl, redirectUri: GMAIL_REDIRECT_URI });
       writeCredentialsSafely(credentialsFile, markerFile, result.credentials);
       Object.assign(flow, { status: "stored", authUrl: null, state: null, error: null, email: result.email });

@@ -14,6 +14,7 @@ import {
   registerGmailOauthAdmin,
   resolveGoogleOauthKeysFile,
   writeCredentialsSafely,
+  writeGoogleOauthClientFieldsSafely,
   writeGoogleOauthClientSafely,
 } from "./gmail-oauth-admin.js";
 
@@ -40,6 +41,24 @@ test("OAuth client JSON is validated and stored privately", (t) => {
   writeGoogleOauthClientSafely(target, value);
   assert.deepEqual(JSON.parse(fs.readFileSync(target, "utf8")), { installed: { client_id: "client", client_secret: "secret" } });
   assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+});
+
+test("OAuth client ID and secret are converted to the Gmail MCP file privately", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-client-fields-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const target = path.join(dir, "gcp-oauth.keys.json");
+
+  writeGoogleOauthClientFieldsSafely(target, " client.apps.googleusercontent.com ", " GOCSPX-secret ");
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(target, "utf8")), {
+    installed: {
+      client_id: "client.apps.googleusercontent.com",
+      client_secret: "GOCSPX-secret",
+    },
+  });
+  assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+  assert.throws(() => writeGoogleOauthClientFieldsSafely(target, "", "secret"), /格式不正确/);
+  assert.throws(() => writeGoogleOauthClientFieldsSafely(target, "client id", "secret"), /格式不正确/);
 });
 
 test("callback accepts only the exact localhost return URL and matching state", () => {

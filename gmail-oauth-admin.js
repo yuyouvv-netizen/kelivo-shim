@@ -37,14 +37,19 @@ function cookiesOf(req) {
 
 function page(title, body, script = "", nonce = "") {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
-body{font:17px system-ui,-apple-system,sans-serif;max-width:720px;margin:0 auto;padding:24px 18px;line-height:1.55;background:#f5f3ee;color:#171717}main{background:#fff;border-radius:24px;padding:24px;box-shadow:0 2px 18px #0000000b}h1{font-size:30px;margin:0 0 18px}button,.button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;background:#111;color:#fff;padding:15px 16px;margin:14px 0;font:600 17px system-ui;text-align:center;text-decoration:none}button:disabled{opacity:.45}input{display:block;width:100%;box-sizing:border-box;border:1px solid #bbb;border-radius:12px;padding:13px;font:16px ui-monospace,monospace;margin:8px 0 12px}.hide{display:none}.muted{color:#666}.ok{color:#087b35}.err{color:#b42318;white-space:pre-wrap}</style></head><body><main>${body}</main>${script ? `<script nonce="${nonce}">${script}</script>` : ""}</body></html>`;
+body{font:17px system-ui,-apple-system,sans-serif;max-width:720px;margin:0 auto;padding:24px 18px;line-height:1.55;background:#f5f3ee;color:#171717}main{background:#fff;border-radius:24px;padding:24px;box-shadow:0 2px 18px #0000000b}h1{font-size:30px;margin:0 0 18px}button,.button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;background:#111;color:#fff;padding:15px 16px;margin:14px 0;font:600 17px system-ui;text-align:center;text-decoration:none}button:disabled{opacity:.45}input,textarea{display:block;width:100%;box-sizing:border-box;border:1px solid #bbb;border-radius:12px;padding:13px;font:16px ui-monospace,monospace;margin:8px 0 12px}textarea{min-height:150px}.hide{display:none}.muted{color:#666}.ok{color:#087b35}.err{color:#b42318;white-space:pre-wrap}details{margin-top:22px}summary{font-weight:650}</style></head><body><main>${body}</main>${script ? `<script nonce="${nonce}">${script}</script>` : ""}</body></html>`;
+}
+
+export function parseGoogleOauthClientJson(value) {
+  const parsed = JSON.parse(String(value || ""));
+  const client = parsed.installed || parsed.web;
+  if (!client?.client_id || !client?.client_secret) throw new Error("Google OAuth 客户端文件格式不正确。请保留原来的 gcp-oauth.keys.json。");
+  return { parsed, clientId: String(client.client_id), clientSecret: String(client.client_secret) };
 }
 
 export function readGoogleOauthClient(file) {
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-  const client = parsed.installed || parsed.web;
-  if (!client?.client_id || !client?.client_secret) throw new Error("Google OAuth 客户端文件格式不正确。请保留原来的 gcp-oauth.keys.json。");
-  return { clientId: String(client.client_id), clientSecret: String(client.client_secret) };
+  const { clientId, clientSecret } = parseGoogleOauthClientJson(fs.readFileSync(file, "utf8"));
+  return { clientId, clientSecret };
 }
 
 export function buildGoogleAuthUrl({ clientId, state, redirectUri = GMAIL_REDIRECT_URI } = {}) {
@@ -145,6 +150,20 @@ export function ensureCanonicalGoogleOauthKeysFile(sourceFile, targetFile) {
   return targetFile;
 }
 
+export function writeGoogleOauthClientSafely(targetFile, value) {
+  const { parsed } = parseGoogleOauthClientJson(value);
+  fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+  const temp = `${targetFile}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(parsed) + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.chmodSync(temp, 0o600);
+    fs.renameSync(temp, targetFile);
+    fs.chmodSync(targetFile, 0o600);
+  } finally {
+    try { fs.unlinkSync(temp); } catch {}
+  }
+}
+
 export function writeCredentialsSafely(credentialsFile, markerFile, credentials, now = new Date()) {
   fs.mkdirSync(path.dirname(credentialsFile), { recursive: true });
   fs.mkdirSync(path.dirname(markerFile), { recursive: true });
@@ -223,13 +242,14 @@ function adminPage(csrf) {
   const nonce = randomBytes(18).toString("base64url");
   const script = `
 const csrf=${JSON.stringify(csrf)},base=${JSON.stringify(GMAIL_OAUTH_BASE_PATH)};
-const statusEl=document.getElementById("status"),start=document.getElementById("start"),auth=document.getElementById("auth"),paste=document.getElementById("paste"),callback=document.getElementById("callback"),save=document.getElementById("save");
+const statusEl=document.getElementById("status"),start=document.getElementById("start"),auth=document.getElementById("auth"),paste=document.getElementById("paste"),callback=document.getElementById("callback"),save=document.getElementById("save"),clientJson=document.getElementById("oauthClientJson"),saveClient=document.getElementById("saveClient");
 async function post(path,body={}){const r=await fetch(base+path,{method:"POST",headers:{"content-type":"application/json","x-csrf-token":csrf},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||"请求失败");return j}
 async function refresh(){try{const r=await fetch(base+"/status",{cache:"no-store"});if(r.status===401){location.reload();return}const s=await r.json();statusEl.textContent=s.message;statusEl.className=s.status==="error"?"err":s.status==="stored"?"ok":"";start.disabled=s.status==="starting"||s.status==="exchanging";auth.classList.toggle("hide",!s.authUrl);paste.classList.toggle("hide",s.status!=="waiting_callback");if(s.authUrl)auth.href=s.authUrl}catch{}}
 start.onclick=async()=>{start.disabled=true;try{await post("/start")}catch(e){statusEl.textContent=e.message;statusEl.className="err"}refresh()};
 save.onclick=async()=>{const value=callback.value.trim();if(!value)return;save.disabled=true;statusEl.textContent="正在验证新邮箱，旧邮箱凭据暂时保留…";try{const j=await post("/callback",{callbackUrl:value});callback.value="";statusEl.textContent=j.message;statusEl.className="ok";paste.classList.add("hide");start.disabled=true}catch(e){statusEl.textContent=e.message;statusEl.className="err";save.disabled=false}};
+saveClient.onclick=async()=>{const value=clientJson.value.trim();if(!value)return;saveClient.disabled=true;statusEl.textContent="正在把 OAuth 客户端保存到私有卷…";try{await post("/oauth-client",{oauthClientJson:value});clientJson.value="";await post("/start");statusEl.textContent="OAuth 客户端已保存，Google 授权链接已生成。";statusEl.className="ok"}catch(e){statusEl.textContent=e.message;statusEl.className="err";saveClient.disabled=false}refresh()};
 refresh();setInterval(refresh,1800);`;
-  return { nonce, html: page("Gmail 换到新邮箱", `<h1>Gmail 换到新邮箱</h1><p id="status">正在读取状态…</p><button id="start" type="button">1. 生成 Google 授权链接</button><a id="auth" class="button hide" target="_blank" rel="noopener noreferrer">2. 打开 Google 授权页</a><div id="paste" class="hide"><p>在 Google 中选择<strong>新邮箱</strong>并允许访问。随后浏览器会跳到一个打不开的 <code>localhost</code> 页面——这是预期现象。</p><p>复制那个页面地址栏里的<strong>完整网址</strong>，回到这里粘贴；不要发到聊天里。</p><label for="callback">Google 返回网址</label><input id="callback" type="password" autocomplete="off" maxlength="8192"><button id="save" type="button">3. 验证并切换邮箱</button></div><p class="muted">新邮箱通过 Gmail API 验证后才会替换；旧凭据会保留一份私有备份。成功后服务自动重启，本入口自动关闭。</p>`, script, nonce) };
+  return { nonce, html: page("Gmail 换到新邮箱", `<h1>Gmail 换到新邮箱</h1><p id="status">正在读取状态…</p><button id="start" type="button">1. 生成 Google 授权链接</button><a id="auth" class="button hide" target="_blank" rel="noopener noreferrer">2. 打开 Google 授权页</a><div id="paste" class="hide"><p>在 Google 中选择<strong>新邮箱</strong>并允许访问。随后浏览器会跳到一个打不开的 <code>localhost</code> 页面——这是预期现象。</p><p>复制那个页面地址栏里的<strong>完整网址</strong>，回到这里粘贴；不要发到聊天里。</p><label for="callback">Google 返回网址</label><input id="callback" type="password" autocomplete="off" maxlength="8192"><button id="save" type="button">3. 验证并切换邮箱</button></div><details><summary>原来的 gcp-oauth.keys.json 不在私有卷里？</summary><p>把以前保存的 <code>gcp-oauth.keys.json</code> 完整内容粘在这里。它只会保存到你的私有卷，不会进入 GitHub 或日志。</p><label for="oauthClientJson">Google OAuth 客户端 JSON</label><textarea id="oauthClientJson" autocomplete="off" spellcheck="false" maxlength="12000"></textarea><button id="saveClient" type="button">保存到私有卷并生成授权链接</button></details><p class="muted">新邮箱通过 Gmail API 验证后才会替换；旧凭据会保留一份私有备份。成功后服务自动重启，本入口自动关闭。</p>`, script, nonce) };
 }
 
 export function registerGmailOauthAdmin(app, {
@@ -331,6 +351,16 @@ export function registerGmailOauthAdmin(app, {
     } catch (error) {
       Object.assign(flow, { status: "error", authUrl: null, state: null, error: error.message });
       res.status(500).json({ error: "无法读取现有 Google OAuth 客户端。" });
+    }
+  });
+
+  app.post(`${GMAIL_OAUTH_BASE_PATH}/oauth-client`, requireSession, requireCsrf, (req, res) => {
+    try {
+      writeGoogleOauthClientSafely(oauthKeysFile, req.body?.oauthClientJson);
+      Object.assign(flow, { status: "idle", authUrl: null, state: null, error: null, email: null });
+      res.json({ ok: true });
+    } catch {
+      res.status(400).json({ error: "这不是有效的 gcp-oauth.keys.json，请完整复制文件内容。" });
     }
   });
 

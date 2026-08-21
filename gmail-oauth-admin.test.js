@@ -8,6 +8,7 @@ import {
   GMAIL_SCOPES,
   buildGoogleAuthUrl,
   credentialsFromTokenResponse,
+  ensureCanonicalGoogleOauthKeysFile,
   parseGoogleCallback,
   registerGmailOauthAdmin,
   resolveGoogleOauthKeysFile,
@@ -144,4 +145,19 @@ test("OAuth client discovery accepts the restored runtime location", (t) => {
 
   assert.equal(resolveGoogleOauthKeysFile("/missing/configured-file.json", dir), restored);
   assert.equal(resolveGoogleOauthKeysFile(path.join(dir, "missing.json"), path.join(dir, "other-home")), path.join(dir, "missing.json"));
+});
+
+test("OAuth client discovery recovers a key nested under malformed credentials directory", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-nested-keys-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const source = path.join(dir, ".gmail-mcp", "credentials.json", "gcp-oauth.keys.json");
+  const target = path.join(dir, "canonical", "gcp-oauth.keys.json");
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, JSON.stringify({ installed: { client_id: "client", client_secret: "secret" } }));
+
+  const resolved = resolveGoogleOauthKeysFile(target, dir);
+  assert.equal(resolved, source);
+  assert.equal(ensureCanonicalGoogleOauthKeysFile(resolved, target), target);
+  assert.deepEqual(JSON.parse(fs.readFileSync(target, "utf8")), { installed: { client_id: "client", client_secret: "secret" } });
+  assert.equal(fs.statSync(target).mode & 0o777, 0o600);
 });

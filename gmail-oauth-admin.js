@@ -134,7 +134,12 @@ export function writeCredentialsSafely(credentialsFile, markerFile, credentials,
   const markerTemp = `${markerFile}.tmp-${suffix}`;
   const backupTemp = `${backup}.tmp-${suffix}`;
   const hadOldCredentials = fs.existsSync(credentialsFile);
+  const oldCredentialsWereFile = hadOldCredentials && fs.lstatSync(credentialsFile).isFile();
+  const malformedBackup = hadOldCredentials && !oldCredentialsWereFile
+    ? path.join(path.dirname(credentialsFile), `credentials.malformed-${now.toISOString().replace(/[:.]/g, "-")}-${suffix}`)
+    : null;
   let replacedCredentials = false;
+  let movedMalformedCredentials = false;
 
   try {
     fs.writeFileSync(credentialsTemp, JSON.stringify(credentials) + "\n", { encoding: "utf8", mode: 0o600 });
@@ -142,7 +147,12 @@ export function writeCredentialsSafely(credentialsFile, markerFile, credentials,
     fs.writeFileSync(markerTemp, JSON.stringify({ completedAt: now.toISOString() }) + "\n", { encoding: "utf8", mode: 0o600 });
     fs.chmodSync(markerTemp, 0o600);
 
-    if (hadOldCredentials) {
+    if (malformedBackup) {
+      // A bad restore can leave credentials.json as a directory. Preserve it
+      // intact for diagnosis, but free the file path for verified credentials.
+      fs.renameSync(credentialsFile, malformedBackup);
+      movedMalformedCredentials = true;
+    } else if (oldCredentialsWereFile) {
       fs.copyFileSync(credentialsFile, backupTemp);
       fs.chmodSync(backupTemp, 0o600);
       fs.renameSync(backupTemp, backup);
@@ -155,7 +165,7 @@ export function writeCredentialsSafely(credentialsFile, markerFile, credentials,
     fs.chmodSync(markerFile, 0o600);
   } catch (error) {
     if (replacedCredentials) {
-      if (hadOldCredentials && fs.existsSync(backup)) {
+      if (oldCredentialsWereFile && fs.existsSync(backup)) {
         const restoreTemp = `${credentialsFile}.restore-${suffix}`;
         fs.copyFileSync(backup, restoreTemp);
         fs.chmodSync(restoreTemp, 0o600);
@@ -163,6 +173,9 @@ export function writeCredentialsSafely(credentialsFile, markerFile, credentials,
       } else {
         try { fs.unlinkSync(credentialsFile); } catch {}
       }
+    }
+    if (movedMalformedCredentials && malformedBackup && !fs.existsSync(credentialsFile)) {
+      try { fs.renameSync(malformedBackup, credentialsFile); } catch {}
     }
     try { fs.unlinkSync(markerFile); } catch {}
     throw error;
@@ -202,7 +215,11 @@ export function registerGmailOauthAdmin(app, {
   log = (...args) => console.log(...args),
 } = {}) {
   if (!shimKey) return { enabled: false, reason: "missing-shim-key" };
-  if (fs.existsSync(markerFile)) return { enabled: false, reason: "migration-complete" };
+  // A marker only counts as complete when credentials.json is a real file.
+  // This keeps the protected recovery page available after a malformed restore.
+  if (fs.existsSync(markerFile) && fs.existsSync(credentialsFile) && fs.lstatSync(credentialsFile).isFile()) {
+    return { enabled: false, reason: "migration-complete" };
+  }
   if (typeof urlencoded !== "function" || typeof json !== "function" || typeof fetchImpl !== "function") throw new Error("gmail OAuth admin dependencies missing");
 
   const sessions = new Map();

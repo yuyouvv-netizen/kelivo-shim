@@ -35,6 +35,10 @@ function safeEqual(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -181,6 +185,9 @@ export function registerClaudeOauthAdmin(app, {
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
       "Referrer-Policy": "no-referrer",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     });
     next();
   });
@@ -226,12 +233,22 @@ export function registerClaudeOauthAdmin(app, {
     resetState();
     state.status = "starting";
     state.startedAt = Date.now();
-    const env = { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" };
+    const env = { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TERM: "dumb" };
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
-    const child = spawn(claudeBin, ["setup-token"], { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
+    // Claude's interactive setup is most reliable behind a pseudo-terminal.
+    // Disable terminal echo so the pasted authorization code never comes back
+    // through stdout. Debian's `script` is available in the production image;
+    // keep a direct-spawn fallback for other runtimes.
+    const ptyHelper = "/usr/bin/script";
+    const usePty = fs.existsSync(ptyHelper);
+    const program = usePty ? ptyHelper : claudeBin;
+    const args = usePty
+      ? ["-qefc", `stty -echo; exec ${shellQuote(claudeBin)} setup-token`, "/dev/null"]
+      : ["setup-token"];
+    const child = spawn(program, args, { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
     state.child = child;
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");

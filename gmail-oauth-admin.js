@@ -120,10 +120,29 @@ export function resolveGoogleOauthKeysFile(configuredFile, homeDir = process.env
   const candidates = [
     configuredFile,
     "/persona/gmail-auth/gcp-oauth.keys.json",
+    "/persona/gmail-auth/credentials.json/gcp-oauth.keys.json",
     "/src/gmail-auth/gcp-oauth.keys.json",
+    "/src/gmail-auth/credentials.json/gcp-oauth.keys.json",
     path.join(homeDir, ".gmail-mcp", "gcp-oauth.keys.json"),
+    path.join(homeDir, ".gmail-mcp", "credentials.json", "gcp-oauth.keys.json"),
   ];
-  return [...new Set(candidates.filter(Boolean))].find((file) => fs.existsSync(file)) || configuredFile;
+  return [...new Set(candidates.filter(Boolean))].find((file) => fs.existsSync(file) && fs.lstatSync(file).isFile()) || configuredFile;
+}
+
+export function ensureCanonicalGoogleOauthKeysFile(sourceFile, targetFile) {
+  if (!sourceFile || !targetFile || sourceFile === targetFile || fs.existsSync(targetFile)) return targetFile;
+  readGoogleOauthClient(sourceFile);
+  fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+  const temp = `${targetFile}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    fs.copyFileSync(sourceFile, temp);
+    fs.chmodSync(temp, 0o600);
+    fs.renameSync(temp, targetFile);
+    fs.chmodSync(targetFile, 0o600);
+  } finally {
+    try { fs.unlinkSync(temp); } catch {}
+  }
+  return targetFile;
 }
 
 export function writeCredentialsSafely(credentialsFile, markerFile, credentials, now = new Date()) {
@@ -303,7 +322,9 @@ export function registerGmailOauthAdmin(app, {
 
   app.post(`${GMAIL_OAUTH_BASE_PATH}/start`, requireSession, requireCsrf, (_req, res) => {
     try {
-      const client = readGoogleOauthClient(resolveGoogleOauthKeysFile(oauthKeysFile));
+      const resolvedKeysFile = resolveGoogleOauthKeysFile(oauthKeysFile);
+      const client = readGoogleOauthClient(resolvedKeysFile);
+      ensureCanonicalGoogleOauthKeysFile(resolvedKeysFile, oauthKeysFile);
       const state = randomBytes(32).toString("base64url");
       Object.assign(flow, { status: "waiting_callback", authUrl: buildGoogleAuthUrl({ clientId: client.clientId, state }), state, startedAt: Date.now(), error: null, email: null });
       res.status(202).json({ ok: true });

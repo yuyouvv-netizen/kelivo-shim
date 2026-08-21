@@ -9,6 +9,7 @@ import {
   buildGoogleAuthUrl,
   credentialsFromTokenResponse,
   parseGoogleCallback,
+  registerGmailOauthAdmin,
   resolveGoogleOauthKeysFile,
   writeCredentialsSafely,
 } from "./gmail-oauth-admin.js";
@@ -69,6 +70,47 @@ test("new credentials are installed only with a private backup and completion ma
   assert.equal(fs.statSync(credentialsFile).mode & 0o777, 0o600);
   assert.equal(fs.statSync(path.join(dir, "credentials.previous.json")).mode & 0o777, 0o600);
   assert.equal(fs.statSync(markerFile).mode & 0o777, 0o600);
+});
+
+test("a malformed credentials directory is preserved and replaced by a credentials file", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-malformed-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const credentialsFile = path.join(dir, "credentials.json");
+  const markerFile = path.join(dir, ".new-account-authorized");
+  const newCredentials = { access_token: "new-access", refresh_token: "new-refresh" };
+  fs.mkdirSync(credentialsFile);
+  fs.writeFileSync(path.join(credentialsFile, "preserved.txt"), "keep me");
+
+  writeCredentialsSafely(credentialsFile, markerFile, newCredentials, new Date("2026-08-21T12:00:00.000Z"));
+
+  assert.equal(fs.statSync(credentialsFile).isFile(), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(credentialsFile, "utf8")), newCredentials);
+  const preserved = fs.readdirSync(dir).find((name) => name.startsWith("credentials.malformed-"));
+  assert.ok(preserved);
+  assert.equal(fs.statSync(path.join(dir, preserved)).isDirectory(), true);
+  assert.equal(fs.readFileSync(path.join(dir, preserved, "preserved.txt"), "utf8"), "keep me");
+});
+
+test("completion marker does not hide recovery page while credentials path is malformed", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-recovery-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const credentialsFile = path.join(dir, "credentials.json");
+  const markerFile = path.join(dir, ".new-account-authorized");
+  fs.mkdirSync(credentialsFile);
+  fs.writeFileSync(markerFile, "{}");
+  const app = { use() {}, get() {}, post() {} };
+
+  const result = registerGmailOauthAdmin(app, {
+    shimKey: "secret",
+    credentialsFile,
+    markerFile,
+    urlencoded: () => (_req, _res, next) => next(),
+    json: () => (_req, _res, next) => next(),
+    fetchImpl: async () => { throw new Error("unused"); },
+    log: () => {},
+  });
+
+  assert.equal(result.enabled, true);
 });
 
 test("OAuth client discovery accepts the restored runtime location", (t) => {

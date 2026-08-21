@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   extractClaudeOauthUrl,
   extractClaudeSetupToken,
+  formatClaudeAuthorizationInput,
 } from "./claude-oauth-admin.js";
 
 test("accepts only the official Claude OAuth authorization endpoint", () => {
@@ -31,4 +32,9 @@ test("strips terminal color codes before parsing", () => {
   assert.equal(extractClaudeSetupToken(`\u001b[32m${token}\u001b[0m`), token);
   const url = "https://claude.com/cai/oauth/authorize?state=abc";
   assert.equal(extractClaudeOauthUrl(`\u001b]8;;${url}\u0007${url}\u001b]8;;\u0007`), url);
+});
+
+test("submits the authorization code with the correct Enter sequence", () => {
+  assert.equal(formatClaudeAuthorizationInput("code#state", "pty"), "code#state\r");
+  assert.equal(formatClaudeAuthorizationInput("code#state", "pipe"), "code#state\n");
 });

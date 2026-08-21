@@ -6,6 +6,7 @@ import { spawn as spawnProcess } from "child_process";
 const BASE_PATH = "/admin/claude-oauth";
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const SETUP_TTL_MS = 20 * 60 * 1000;
+const EXCHANGE_TTL_MS = 90 * 1000;
 const TOKEN_RE = /\bsk-ant-oat01-[A-Za-z0-9_-]{40,}\b/;
 const URL_RE = /https:\/\/(?:claude\.ai\/oauth\/authorize|platform\.claude\.com\/oauth\/authorize|claude\.com\/cai\/oauth\/authorize)\?[^\s<>"']+/;
 const OFFICIAL_AUTH_ENDPOINTS = new Set([
@@ -34,6 +35,12 @@ export function extractClaudeOauthUrl(value) {
 
 export function extractClaudeSetupToken(value) {
   return stripAnsi(value).match(TOKEN_RE)?.[0] || null;
+}
+
+export function formatClaudeAuthorizationInput(code, mode) {
+  // Terminal UIs receive Enter as carriage return. Plain pipe/readline mode
+  // expects a newline instead.
+  return `${code}${mode === "pty" ? "\r" : "\n"}`;
 }
 
 function safeEqual(left, right) {
@@ -125,7 +132,7 @@ export function registerClaudeOauthAdmin(app, {
   const sessions = new Map();
   const state = {
     status: "idle", authUrl: null, child: null, output: "", startedAt: 0,
-    error: null, startupTimer: null, mode: null, receivedBytes: 0,
+    error: null, startupTimer: null, exchangeTimer: null, mode: null, receivedBytes: 0,
   };
   let failedLogins = [];
 
@@ -135,9 +142,11 @@ export function registerClaudeOauthAdmin(app, {
     failedLogins = failedLogins.filter((at) => now - at < 10 * 60 * 1000);
     if (state.child && now - state.startedAt > SETUP_TTL_MS) {
       if (state.startupTimer) clearTimeout(state.startupTimer);
+      if (state.exchangeTimer) clearTimeout(state.exchangeTimer);
       try { state.child.kill("SIGTERM"); } catch {}
       state.child = null;
       state.startupTimer = null;
+      state.exchangeTimer = null;
       state.status = "error";
       state.error = "授权流程已超时，请重新开始。";
     }
@@ -168,10 +177,11 @@ export function registerClaudeOauthAdmin(app, {
 
   function resetState() {
     if (state.startupTimer) clearTimeout(state.startupTimer);
+    if (state.exchangeTimer) clearTimeout(state.exchangeTimer);
     if (state.child) try { state.child.kill("SIGTERM"); } catch {}
     Object.assign(state, {
       status: "idle", authUrl: null, child: null, output: "", startedAt: 0,
-      error: null, startupTimer: null, mode: null, receivedBytes: 0,
+      error: null, startupTimer: null, exchangeTimer: null, mode: null, receivedBytes: 0,
     });
   }
 
@@ -192,7 +202,9 @@ export function registerClaudeOauthAdmin(app, {
       fs.writeFileSync(tokenFile, token + "\n", { encoding: "utf8", mode: 0o600 });
       fs.chmodSync(tokenFile, 0o600);
       if (state.startupTimer) clearTimeout(state.startupTimer);
+      if (state.exchangeTimer) clearTimeout(state.exchangeTimer);
       state.startupTimer = null;
+      state.exchangeTimer = null;
       state.output = "";
       state.status = "stored";
       state.error = null;
@@ -223,7 +235,9 @@ export function registerClaudeOauthAdmin(app, {
     child.on("error", (error) => {
       if (state.child !== child || state.status === "stored") return;
       if (state.startupTimer) clearTimeout(state.startupTimer);
+      if (state.exchangeTimer) clearTimeout(state.exchangeTimer);
       state.startupTimer = null;
+      state.exchangeTimer = null;
       state.child = null;
       state.status = "error";
       state.error = `无法启动 Claude 授权流程：${error.message}`;
@@ -231,7 +245,9 @@ export function registerClaudeOauthAdmin(app, {
     child.on("exit", (code) => {
       if (state.child !== child) return;
       if (state.startupTimer) clearTimeout(state.startupTimer);
+      if (state.exchangeTimer) clearTimeout(state.exchangeTimer);
       state.startupTimer = null;
+      state.exchangeTimer = null;
       state.child = null;
       if (state.status === "stored") return;
       state.status = "error";
@@ -325,12 +341,23 @@ export function registerClaudeOauthAdmin(app, {
     if (!state.child || state.status !== "waiting_code") return res.status(409).json({ error: "请先生成并打开官方授权链接。" });
     if (code.length < 8 || code.length > 4096 || /[\r\n]/.test(code)) return res.status(400).json({ error: "授权码格式不正确。" });
     state.status = "exchanging";
-    try { state.child.stdin.write(code + "\n"); }
+    try { state.child.stdin.write(formatClaudeAuthorizationInput(code, state.mode)); }
     catch {
       state.status = "error";
       state.error = "授权流程已断开，请重新开始。";
       return res.status(500).json({ error: state.error });
     }
+    if (state.exchangeTimer) clearTimeout(state.exchangeTimer);
+    state.exchangeTimer = setTimeout(() => {
+      state.exchangeTimer = null;
+      if (state.status !== "exchanging") return;
+      if (state.child) try { state.child.kill("SIGTERM"); } catch {}
+      state.child = null;
+      state.status = "error";
+      state.error = "Claude 没有在限定时间内完成授权验证，请重新生成链接。";
+      state.output = "";
+    }, EXCHANGE_TTL_MS);
+    state.exchangeTimer.unref?.();
     res.status(202).json({ ok: true });
   });
 

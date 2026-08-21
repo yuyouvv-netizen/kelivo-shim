@@ -66,7 +66,7 @@ test("new credentials are installed only with a private backup and completion ma
 
   assert.deepEqual(JSON.parse(fs.readFileSync(credentialsFile, "utf8")), newCredentials);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "credentials.previous.json"), "utf8")), oldCredentials);
-  assert.deepEqual(JSON.parse(fs.readFileSync(markerFile, "utf8")), { completedAt: "2026-08-21T12:00:00.000Z" });
+  assert.deepEqual(JSON.parse(fs.readFileSync(markerFile, "utf8")), { completedAt: "2026-08-21T12:00:00.000Z", migrationVersion: 2 });
   assert.equal(fs.statSync(credentialsFile).mode & 0o777, 0o600);
   assert.equal(fs.statSync(path.join(dir, "credentials.previous.json")).mode & 0o777, 0o600);
   assert.equal(fs.statSync(markerFile).mode & 0o777, 0o600);
@@ -98,6 +98,28 @@ test("completion marker does not hide recovery page while credentials path is ma
   const markerFile = path.join(dir, ".new-account-authorized");
   fs.mkdirSync(credentialsFile);
   fs.writeFileSync(markerFile, "{}");
+  const app = { use() {}, get() {}, post() {} };
+
+  const result = registerGmailOauthAdmin(app, {
+    shimKey: "secret",
+    credentialsFile,
+    markerFile,
+    urlencoded: () => (_req, _res, next) => next(),
+    json: () => (_req, _res, next) => next(),
+    fetchImpl: async () => { throw new Error("unused"); },
+    log: () => {},
+  });
+
+  assert.equal(result.enabled, true);
+});
+
+test("a stale marker does not hide recovery page even when credentials are a file", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-stale-marker-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const credentialsFile = path.join(dir, "credentials.json");
+  const markerFile = path.join(dir, ".new-account-authorized");
+  fs.writeFileSync(credentialsFile, "{}");
+  fs.writeFileSync(markerFile, JSON.stringify({ completedAt: "2026-08-21T12:00:00.000Z" }));
   const app = { use() {}, get() {}, post() {} };
 
   const result = registerGmailOauthAdmin(app, {

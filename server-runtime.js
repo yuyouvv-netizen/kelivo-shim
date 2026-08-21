@@ -9,6 +9,9 @@ const SESSION_STATE_FILE = process.env.SESSION_STATE_FILE || "/persona/claude-st
 const IMPORT_MAX_CHARS = Math.max(10_000, +(process.env.IMPORT_MAX_CHARS || 2_000_000));
 const IMPORT_MAX_MESSAGES = Math.max(2, +(process.env.IMPORT_MAX_MESSAGES || 4000));
 const store = new ImportHistoryStore({ dir: IMPORT_DIR, sessionStateFile: SESSION_STATE_FILE });
+if (store.ensureFreshSession()) {
+  console.log(new Date().toISOString(), "[import] pending move forced a fresh native session");
+}
 
 function authOk(req) {
   if (!SHIM_KEY) return false;

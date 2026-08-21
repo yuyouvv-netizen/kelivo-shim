@@ -18,6 +18,23 @@ done
 
 unset ANTHROPIC_API_KEY   # subscription channel must win
 
+# 手机一次性授权页把新账号凭据写进 /persona 私有卷。环境变量仍优先；
+# 没有环境变量时才从卷恢复，且绝不把令牌打印进日志。
+CLAUDE_OAUTH_TOKEN_FILE="${CLAUDE_OAUTH_TOKEN_FILE:-/persona/claude-code-oauth-token}"
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -r "$CLAUDE_OAUTH_TOKEN_FILE" ]; then
+  IFS= read -r CLAUDE_CODE_OAUTH_TOKEN < "$CLAUDE_OAUTH_TOKEN_FILE"
+  case "$CLAUDE_CODE_OAUTH_TOKEN" in
+    sk-ant-oat01-*)
+      export CLAUDE_CODE_OAUTH_TOKEN
+      echo "[entrypoint] restored direct Claude auth from private volume"
+      ;;
+    *)
+      unset CLAUDE_CODE_OAUTH_TOKEN
+      echo "[entrypoint] WARNING: ignored invalid Claude OAuth token file"
+      ;;
+  esac
+fi
+
 # 新账号直连保险:CLAUDE_CODE_OAUTH_TOKEN 是官方给 headless/自动环境使用的
 # 订阅凭据。旧部署仍保留 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN 作为可审计
 # 的历史配置,但 AUTH_TOKEN 的认证优先级更高;若不主动屏蔽,它会把请求送回旧代理。

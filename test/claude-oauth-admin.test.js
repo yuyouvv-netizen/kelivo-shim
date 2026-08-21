@@ -4,7 +4,7 @@ import {
   extractClaudeOauthUrl,
   extractClaudeSetupToken,
   writeClaudeAuthorizationCode,
-} from "./claude-oauth-admin.js";
+} from "../claude-oauth-admin.js";
 
 test("accepts only the official Claude OAuth authorization endpoint", () => {
   for (const url of [

@@ -7,10 +7,17 @@ const BASE_PATH = "/admin/claude-oauth";
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const SETUP_TTL_MS = 20 * 60 * 1000;
 const TOKEN_RE = /\bsk-ant-oat01-[A-Za-z0-9_-]{40,}\b/;
-const URL_RE = /https:\/\/claude\.ai\/oauth\/authorize\?[^\s<>"']+/;
+const URL_RE = /https:\/\/(?:claude\.ai\/oauth\/authorize|platform\.claude\.com\/oauth\/authorize|claude\.com\/cai\/oauth\/authorize)\?[^\s<>"']+/;
+const OFFICIAL_AUTH_ENDPOINTS = new Set([
+  "claude.ai/oauth/authorize",
+  "platform.claude.com/oauth/authorize",
+  "claude.com/cai/oauth/authorize",
+]);
 
 function stripAnsi(value) {
-  return String(value || "").replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+  return String(value || "")
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 export function extractClaudeOauthUrl(value) {
@@ -18,8 +25,8 @@ export function extractClaudeOauthUrl(value) {
   if (!match) return null;
   try {
     const url = new URL(match[0]);
-    return url.protocol === "https:" && url.hostname === "claude.ai" &&
-      url.pathname === "/oauth/authorize" ? url.toString() : null;
+    return url.protocol === "https:" &&
+      OFFICIAL_AUTH_ENDPOINTS.has(`${url.hostname}${url.pathname}`) ? url.toString() : null;
   } catch {
     return null;
   }

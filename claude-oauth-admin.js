@@ -116,7 +116,10 @@ export function registerClaudeOauthAdmin(app, {
   if (typeof urlencoded !== "function") throw new Error("urlencoded middleware is required");
 
   const sessions = new Map();
-  const state = { status: "idle", authUrl: null, child: null, output: "", startedAt: 0, error: null };
+  const state = {
+    status: "idle", authUrl: null, child: null, output: "", startedAt: 0,
+    error: null, startupTimer: null, mode: null, receivedBytes: 0,
+  };
   let failedLogins = [];
 
   function cleanSessions() {
@@ -124,8 +127,10 @@ export function registerClaudeOauthAdmin(app, {
     for (const [id, session] of sessions) if (session.expiresAt <= now) sessions.delete(id);
     failedLogins = failedLogins.filter((at) => now - at < 10 * 60 * 1000);
     if (state.child && now - state.startedAt > SETUP_TTL_MS) {
+      if (state.startupTimer) clearTimeout(state.startupTimer);
       try { state.child.kill("SIGTERM"); } catch {}
       state.child = null;
+      state.startupTimer = null;
       state.status = "error";
       state.error = "授权流程已超时，请重新开始。";
     }
@@ -155,26 +160,97 @@ export function registerClaudeOauthAdmin(app, {
   }
 
   function resetState() {
+    if (state.startupTimer) clearTimeout(state.startupTimer);
     if (state.child) try { state.child.kill("SIGTERM"); } catch {}
-    Object.assign(state, { status: "idle", authUrl: null, child: null, output: "", startedAt: 0, error: null });
+    Object.assign(state, {
+      status: "idle", authUrl: null, child: null, output: "", startedAt: 0,
+      error: null, startupTimer: null, mode: null, receivedBytes: 0,
+    });
   }
 
   function absorb(chunk) {
+    state.receivedBytes += Buffer.byteLength(String(chunk || ""));
     state.output = (state.output + stripAnsi(chunk)).slice(-96 * 1024);
     if (!state.authUrl) {
       state.authUrl = extractClaudeOauthUrl(state.output);
-      if (state.authUrl) state.status = "waiting_code";
+      if (state.authUrl) {
+        if (state.startupTimer) clearTimeout(state.startupTimer);
+        state.startupTimer = null;
+        state.status = "waiting_code";
+      }
     }
     const token = extractClaudeSetupToken(state.output);
     if (token && state.status !== "stored") {
       fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
       fs.writeFileSync(tokenFile, token + "\n", { encoding: "utf8", mode: 0o600 });
       fs.chmodSync(tokenFile, 0o600);
+      if (state.startupTimer) clearTimeout(state.startupTimer);
+      state.startupTimer = null;
       state.output = "";
       state.status = "stored";
       state.error = null;
       log("[oauth-admin] direct Claude OAuth token stored in private volume");
     }
+  }
+
+  function launchSetup(usePty) {
+    const env = { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TERM: "xterm-256color" };
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.ANTHROPIC_BASE_URL;
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+
+    const ptyHelper = "/usr/bin/script";
+    usePty = usePty && fs.existsSync(ptyHelper);
+    const program = usePty ? ptyHelper : claudeBin;
+    const args = usePty
+      ? ["-qefc", `stty cols 5000 rows 40 -echo; exec ${shellQuote(claudeBin)} setup-token`, "/dev/null"]
+      : ["setup-token"];
+    const child = spawn(program, args, { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
+    state.child = child;
+    state.mode = usePty ? "pty" : "pipe";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", absorb);
+    child.stderr?.on("data", absorb);
+    child.on("error", (error) => {
+      if (state.child !== child || state.status === "stored") return;
+      if (state.startupTimer) clearTimeout(state.startupTimer);
+      state.startupTimer = null;
+      state.child = null;
+      state.status = "error";
+      state.error = `无法启动 Claude 授权流程：${error.message}`;
+    });
+    child.on("exit", (code) => {
+      if (state.child !== child) return;
+      if (state.startupTimer) clearTimeout(state.startupTimer);
+      state.startupTimer = null;
+      state.child = null;
+      if (state.status === "stored") return;
+      state.status = "error";
+      state.error = code === 0 ? "授权已结束，但没有取得令牌，请重新开始。" : "Claude 授权流程中断，请重新开始。";
+      state.output = "";
+    });
+
+    // Some Claude Code builds render only on a TTY, while others behave better
+    // on plain pipes. Try the safer TTY first, then automatically fall back
+    // once if it produces no usable authorization link.
+    state.startupTimer = setTimeout(() => {
+      if (state.child !== child || state.authUrl || state.status !== "starting") return;
+      state.startupTimer = null;
+      state.child = null;
+      try { child.kill("SIGTERM"); } catch {}
+      state.output = "";
+      state.receivedBytes = 0;
+      if (usePty) {
+        log("[oauth-admin] setup link not visible on pty; retrying with pipes");
+        launchSetup(false);
+      } else {
+        state.status = "error";
+        state.error = "Claude 授权命令没有返回链接，请让维护者查看服务日志。";
+      }
+    }, usePty ? 10_000 : 15_000);
+    state.startupTimer.unref?.();
   }
 
   app.use(BASE_PATH, urlencoded({ extended: false, limit: "8kb" }));
@@ -233,40 +309,7 @@ export function registerClaudeOauthAdmin(app, {
     resetState();
     state.status = "starting";
     state.startedAt = Date.now();
-    const env = { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TERM: "dumb" };
-    delete env.ANTHROPIC_API_KEY;
-    delete env.ANTHROPIC_AUTH_TOKEN;
-    delete env.ANTHROPIC_BASE_URL;
-    delete env.CLAUDE_CODE_OAUTH_TOKEN;
-    // Claude's interactive setup is most reliable behind a pseudo-terminal.
-    // Disable terminal echo so the pasted authorization code never comes back
-    // through stdout. Debian's `script` is available in the production image;
-    // keep a direct-spawn fallback for other runtimes.
-    const ptyHelper = "/usr/bin/script";
-    const usePty = fs.existsSync(ptyHelper);
-    const program = usePty ? ptyHelper : claudeBin;
-    const args = usePty
-      ? ["-qefc", `stty -echo; exec ${shellQuote(claudeBin)} setup-token`, "/dev/null"]
-      : ["setup-token"];
-    const child = spawn(program, args, { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
-    state.child = child;
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", absorb);
-    child.stderr?.on("data", absorb);
-    child.on("error", (error) => {
-      if (state.child !== child || state.status === "stored") return;
-      state.child = null;
-      state.status = "error";
-      state.error = `无法启动 Claude 授权流程：${error.message}`;
-    });
-    child.on("exit", (code) => {
-      if (state.child === child) state.child = null;
-      if (state.status === "stored") return;
-      state.status = "error";
-      state.error = code === 0 ? "授权已结束，但没有取得令牌，请重新开始。" : "Claude 授权流程中断，请重新开始。";
-      state.output = "";
-    });
+    launchSetup(true);
     res.status(202).json({ ok: true });
   });
 

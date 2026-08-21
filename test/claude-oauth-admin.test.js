@@ -27,6 +27,17 @@ test("extracts only the long-lived Claude OAuth token shape", () => {
   assert.equal(extractClaudeSetupToken("sk-ant-oat01-short"), null);
 });
 
+test("reassembles a token wrapped by Claude's terminal renderer", () => {
+  const token = "sk-ant-oat01-" + "aB_9-".repeat(19);
+  const wrapped = [
+    "Your OAuth token (valid for 1 year):",
+    token.slice(0, 64),
+    token.slice(64),
+    "Store this token securely. You won't be able to see it again.",
+  ].join("\n");
+  assert.equal(extractClaudeSetupToken(wrapped), token);
+});
+
 test("strips terminal color codes before parsing", () => {
   const token = "sk-ant-oat01-" + "z".repeat(60);
   assert.equal(extractClaudeSetupToken(`\u001b[32m${token}\u001b[0m`), token);

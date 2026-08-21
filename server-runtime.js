@@ -2,6 +2,7 @@ import express from "express";
 import { contentToText } from "./history.js";
 import { isKelivoTitleRequest } from "./title.js";
 import { ImportHistoryStore, normalizeImportedMessages } from "./import-history.js";
+import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
 
 const SHIM_KEY = process.env.SHIM_KEY || "";
 const IMPORT_DIR = process.env.IMPORT_HISTORY_DIR || "/persona/import-history";
@@ -97,6 +98,11 @@ clear.onclick=async()=>out.textContent=await call('DELETE','/import-history');
 const originalListen = express.application.listen;
 express.application.listen = function patchedListen(...args) {
   const app = this;
+  registerGmailOauthAdmin(app, {
+    shimKey: SHIM_KEY,
+    urlencoded: express.urlencoded,
+    json: express.json,
+  });
   app.get("/import-history", (req, res) => {
     if (!SHIM_KEY) return res.status(503).send("请先配置 SHIM_KEY；迁移入口不会在无鉴权状态开放。");
     if (!authOk(req)) return res.status(401).send("bad key");

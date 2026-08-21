@@ -9,10 +9,12 @@ import {
   buildGoogleAuthUrl,
   credentialsFromTokenResponse,
   ensureCanonicalGoogleOauthKeysFile,
+  parseGoogleOauthClientJson,
   parseGoogleCallback,
   registerGmailOauthAdmin,
   resolveGoogleOauthKeysFile,
   writeCredentialsSafely,
+  writeGoogleOauthClientSafely,
 } from "./gmail-oauth-admin.js";
 
 test("Google authorization URL uses the existing desktop callback and requests offline consent", () => {
@@ -25,6 +27,19 @@ test("Google authorization URL uses the existing desktop callback and requests o
   assert.equal(url.searchParams.get("access_type"), "offline");
   assert.equal(url.searchParams.get("prompt"), "consent select_account");
   assert.deepEqual(url.searchParams.get("scope").split(" "), GMAIL_SCOPES);
+});
+
+test("OAuth client JSON is validated and stored privately", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-client-input-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const target = path.join(dir, "gcp-oauth.keys.json");
+  const value = JSON.stringify({ installed: { client_id: "client", client_secret: "secret" } });
+
+  assert.equal(parseGoogleOauthClientJson(value).clientId, "client");
+  assert.throws(() => parseGoogleOauthClientJson("{}"), /格式不正确/);
+  writeGoogleOauthClientSafely(target, value);
+  assert.deepEqual(JSON.parse(fs.readFileSync(target, "utf8")), { installed: { client_id: "client", client_secret: "secret" } });
+  assert.equal(fs.statSync(target).mode & 0o777, 0o600);
 });
 
 test("callback accepts only the exact localhost return URL and matching state", () => {

@@ -13,6 +13,7 @@ import fs from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
+import { registerClaudeOauthAdmin } from "./claude-oauth-admin.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
@@ -789,6 +790,9 @@ function extractImages(messages) {
 
 const app = express();
 app.use(express.json({ limit: "100mb" }));
+registerClaudeOauthAdmin(app, {
+  shimKey: SHIM_KEY, claudeBin: CLAUDE_BIN, urlencoded: express.urlencoded, log,
+});
 app.get("/health", (_q, r) => r.json({
   ok: !shuttingDown, model: spawnedModel, models: MODELS, busy, queued: queue.length, shuttingDown,
 }));

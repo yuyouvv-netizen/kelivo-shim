@@ -64,6 +64,17 @@ export class ImportHistoryStore {
 
   loadPending() { return jsonRead(this.pendingFile); }
 
+  ensureFreshSession() {
+    if (!this.loadPending()) return false;
+    if (!fs.existsSync(this.sessionStateFile)) return false;
+    ensureDir(this.dir);
+    if (!fs.existsSync(this.preImportSessionFile)) {
+      fs.copyFileSync(this.sessionStateFile, this.preImportSessionFile);
+    }
+    fs.unlinkSync(this.sessionStateFile);
+    return true;
+  }
+
   prepare(payload) {
     const messages = normalizeImportedMessages(payload);
     const chars = messages.reduce((n, m) => n + m.content.length, 0);
@@ -99,7 +110,12 @@ export class ImportHistoryStore {
   }
 
   clear() {
+    const pending = this.loadPending();
     try { fs.unlinkSync(this.pendingFile); } catch {}
+    if (pending && !fs.existsSync(this.sessionStateFile) && fs.existsSync(this.preImportSessionFile)) {
+      ensureDir(path.dirname(this.sessionStateFile));
+      fs.copyFileSync(this.preImportSessionFile, this.sessionStateFile);
+    }
     jsonWrite(this.statusFile, { state: "cleared", messages: 0, chars: 0,
       createdAt: null, consumedAt: null, source: null });
     return this.status();

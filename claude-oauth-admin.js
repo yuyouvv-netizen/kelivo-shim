@@ -37,10 +37,23 @@ export function extractClaudeSetupToken(value) {
   return stripAnsi(value).match(TOKEN_RE)?.[0] || null;
 }
 
-export function formatClaudeAuthorizationInput(code, mode) {
-  // Terminal UIs receive Enter as carriage return. Plain pipe/readline mode
-  // expects a newline instead.
-  return `${code}${mode === "pty" ? "\r" : "\n"}`;
+export async function writeClaudeAuthorizationCode(stdin, code, mode, {
+  isActive = () => true,
+  pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  if (mode !== "pty") {
+    stdin.write(`${code}\n`);
+    return;
+  }
+  // Claude Code 2.1.x has a known TUI paste-input regression. Feed the code
+  // as keyboard-sized events, then send the terminal Enter key.
+  for (const char of code) {
+    if (!isActive()) throw new Error("authorization flow disconnected");
+    stdin.write(char);
+    await pause(4);
+  }
+  if (!isActive()) throw new Error("authorization flow disconnected");
+  stdin.write("\r");
 }
 
 function safeEqual(left, right) {
@@ -341,12 +354,16 @@ export function registerClaudeOauthAdmin(app, {
     if (!state.child || state.status !== "waiting_code") return res.status(409).json({ error: "请先生成并打开官方授权链接。" });
     if (code.length < 8 || code.length > 4096 || /[\r\n]/.test(code)) return res.status(400).json({ error: "授权码格式不正确。" });
     state.status = "exchanging";
-    try { state.child.stdin.write(formatClaudeAuthorizationInput(code, state.mode)); }
-    catch {
+    const child = state.child;
+    void writeClaudeAuthorizationCode(child.stdin, code, state.mode, {
+      isActive: () => state.child === child && state.status === "exchanging",
+    }).catch(() => {
+      if (state.child !== child || state.status !== "exchanging") return;
+      try { child.kill("SIGTERM"); } catch {}
+      state.child = null;
       state.status = "error";
       state.error = "授权流程已断开，请重新开始。";
-      return res.status(500).json({ error: state.error });
-    }
+    });
     if (state.exchangeTimer) clearTimeout(state.exchangeTimer);
     state.exchangeTimer = setTimeout(() => {
       state.exchangeTimer = null;

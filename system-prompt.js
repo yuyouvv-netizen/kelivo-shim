@@ -1,8 +1,9 @@
-export const DEFAULT_SYSTEM_PROMPT_MODE = "replace";
+export const DEFAULT_SYSTEM_PROMPT_MODE = "append";
 
 export function normalizeSystemPromptMode(raw) {
-  return String(raw || "").trim().toLowerCase() === "append"
-    ? "append"
+  const mode = String(raw || "").trim().toLowerCase();
+  return mode === "append" || mode === "replace"
+    ? mode
     : DEFAULT_SYSTEM_PROMPT_MODE;
 }
 

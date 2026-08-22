@@ -8,25 +8,30 @@ import {
   systemPromptArgs,
 } from "../system-prompt.js";
 
-test("system prompt replacement is the safe default", () => {
-  assert.equal(DEFAULT_SYSTEM_PROMPT_MODE, "replace");
-  assert.equal(normalizeSystemPromptMode(), "replace");
-  assert.equal(normalizeSystemPromptMode("replace"), "replace");
-  assert.equal(normalizeSystemPromptMode("unexpected"), "replace");
-});
-
-test("append mode remains available as an explicit rollback", () => {
-  assert.equal(normalizeSystemPromptMode(" append "), "append");
-  assert.equal(normalizeSystemPromptMode("APPEND"), "append");
-  assert.deepEqual(systemPromptArgs("append", "hello"), [
+test("Claude Code prompt plus the private prompt is the default", () => {
+  assert.equal(DEFAULT_SYSTEM_PROMPT_MODE, "append");
+  assert.equal(normalizeSystemPromptMode(), "append");
+  assert.equal(normalizeSystemPromptMode("unexpected"), "append");
+  assert.deepEqual(systemPromptArgs(undefined, "hello"), [
     "--append-system-prompt",
     "hello",
   ]);
 });
 
-test("replacement mode uses the Claude CLI system prompt flag", () => {
-  assert.deepEqual(systemPromptArgs(undefined, "hello"), [
+test("replacement mode remains available as an explicit rollback", () => {
+  assert.equal(normalizeSystemPromptMode("replace"), "replace");
+  assert.equal(normalizeSystemPromptMode(" REPLACE "), "replace");
+  assert.deepEqual(systemPromptArgs("replace", "hello"), [
     "--system-prompt",
+    "hello",
+  ]);
+});
+
+test("append mode accepts normalized explicit values", () => {
+  assert.equal(normalizeSystemPromptMode(" append "), "append");
+  assert.equal(normalizeSystemPromptMode("APPEND"), "append");
+  assert.deepEqual(systemPromptArgs("append", "hello"), [
+    "--append-system-prompt",
     "hello",
   ]);
 });

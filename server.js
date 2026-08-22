@@ -15,6 +15,7 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { registerClaudeOauthAdmin } from "./claude-oauth-admin.js";
 import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
+import { registerSessionAdmin } from "./session-admin.js";
 import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
@@ -65,6 +66,9 @@ const MODEL = process.env.BRAIN_MODEL || "claude-opus-4-6";
 const MODELS = (process.env.BRAIN_MODELS || "claude-opus-4-6,claude-opus-4-8,claude-opus-5,claude-fable-5")
   .split(",").map((s) => s.trim()).filter(Boolean);
 if (!MODELS.includes(MODEL)) MODELS.unshift(MODEL);
+const FRESH_SESSION_MODEL = MODELS.includes(process.env.FRESH_SESSION_MODEL)
+  ? process.env.FRESH_SESSION_MODEL
+  : MODELS.includes("claude-opus-4-6") ? "claude-opus-4-6" : MODEL;
 const EFFORT = process.env.THINK_EFFORT || "low";
 // 按模型覆盖思考深度,格式 "model=effort,model=effort";没写的用 EFFORT
 const EFFORT_OVERRIDES = Object.fromEntries(
@@ -216,6 +220,7 @@ let lastTurnTimeoutAt = null;
 let lastTurnTimeoutSource = null;
 let lastTurnInterruptAt = null;
 let forceFreshSession = false;
+let manualFreshPending = false;
 let nativeSessionId = null;
 let nativeSessionFingerprint = null;
 let nativeSessionResumed = false;
@@ -338,6 +343,7 @@ function abortStalledTurn(stalled) {
 }
 
 function spawnClaude(kelivoSystem, model) {
+  manualFreshPending = false;
   // ?? 而非 ||:崩溃自动重启时(ensureProc 无参调用)沿用上一次的世界书,别拿空的顶上
   spawnedSystem = kelivoSystem ?? spawnedSystem;
   spawnedModel = model || spawnedModel || MODEL;
@@ -496,7 +502,13 @@ function spawnClaude(kelivoSystem, model) {
       obToolNames.clear();
     }
     if (shuttingDown) return finishShutdown();
-    setTimeout(() => { if (queue.length) pump(); else ensureProc(); }, restartDelayMs);
+    setTimeout(() => {
+      if (manualFreshPending && !queue.length) {
+        log("[session] fresh 4.6 waiting for the first real Kelivo message");
+        return;
+      }
+      if (queue.length) pump(); else ensureProc();
+    }, restartDelayMs);
   });
   log("[claude] spawned", spawnedModel, "prompt", SYSTEM_PROMPT_MODE,
     "promptChars", spawnedSystemPromptChars, "worldbookChars", spawnedSystem.length,
@@ -504,6 +516,33 @@ function spawnClaude(kelivoSystem, model) {
   return p;
 }
 function ensureProc(kelivoSystem, model) { if (!proc) proc = spawnClaude(kelivoSystem, model); }
+
+function startManualFreshSession() {
+  if (shuttingDown) return { ok: false, status: 503, error: "服务正在重启，请稍后再试。" };
+  if (busy || turn || queue.length) return { ok: false, status: 409, error: "正在回复，请等这一轮结束后再切换。" };
+
+  // This is an explicit user decision, not a recovery path. Preserve one
+  // rolling transcript copy when possible, but never require an OB archive.
+  snapshotNativeSessionSoon();
+  manualFreshPending = true;
+  skipHistoryOnNextSpawn = true;
+  forceFreshSession = true;
+  clearSessionState(SESSION_STATE_FILE);
+  nativeSessionId = null;
+  nativeSessionFingerprint = null;
+  nativeSessionResumed = false;
+  nativeRecoverySessionId = null;
+  nativeRecoveryStage = 0;
+  nativeTransientFailures = 0;
+  procNeedsHistory = false;
+  spawnedModel = FRESH_SESSION_MODEL;
+
+  const old = proc;
+  proc = null;
+  try { old?.kill(); } catch {}
+  log("[session] current native session released; waiting for fresh", FRESH_SESSION_MODEL);
+  return { ok: true, model: FRESH_SESSION_MODEL };
+}
 
 function onStdout(sourceProc, chunk) {
   sourceProc.kelivoOutBuf += chunk.toString();
@@ -818,6 +857,17 @@ registerClaudeOauthAdmin(app, {
 registerGmailOauthAdmin(app, {
   shimKey: SHIM_KEY, urlencoded: express.urlencoded, json: express.json, log,
 });
+registerSessionAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  log,
+  getStatus: () => ({
+    model: manualFreshPending ? FRESH_SESSION_MODEL : spawnedModel,
+    busy: busy || !!turn || queue.length > 0,
+    awaitingFirstMessage: manualFreshPending,
+  }),
+  startFreshSession: startManualFreshSession,
+});
 app.get("/health", (_q, r) => r.json({
   ok: !shuttingDown, model: spawnedModel, models: MODELS, busy, queued: queue.length, shuttingDown,
 }));
@@ -847,6 +897,8 @@ app.get("/debug", (_q, r) => r.json({
     confirmed: !!proc?.kelivoSessionConfirmed,
     recoveryMode: lastNativeRecoveryMode,
     recoveryAt: lastNativeRecoveryAt ? new Date(lastNativeRecoveryAt).toISOString() : null,
+    freshModel: FRESH_SESSION_MODEL,
+    awaitingFirstMessage: manualFreshPending,
   },
   stream: { heartbeatMs: SSE_HEARTBEAT_MS },
   delivery: {

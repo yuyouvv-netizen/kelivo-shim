@@ -31,17 +31,13 @@ test("replacement mode uses the Claude CLI system prompt flag", () => {
   ]);
 });
 
-test("prompt builder keeps identity, boundaries, continuity and worldbook ordered", () => {
+test("prompt builder keeps the base prompt, continuity and worldbook ordered", () => {
   assert.equal(buildSystemPrompt({
-    soulAnchor: "identity",
-    hardRule: "language",
-    toolBoundaryRule: "boundaries",
+    basePrompt: "identity",
     memoryContinuityRule: "memory",
     kelivoSystem: "world",
   }), [
     "identity",
-    "language",
-    "boundaries",
     "memory",
     "【场景设定/世界书】\nworld",
   ].join("\n\n"));
@@ -49,9 +45,7 @@ test("prompt builder keeps identity, boundaries, continuity and worldbook ordere
 
 test("prompt builder omits empty optional sections", () => {
   assert.equal(buildSystemPrompt({
-    soulAnchor: "identity",
-    hardRule: "",
-    toolBoundaryRule: null,
+    basePrompt: "identity",
     memoryContinuityRule: undefined,
     kelivoSystem: "  ",
   }), "identity");

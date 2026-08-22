@@ -90,12 +90,12 @@ const MAILBOX_TTL_MS = Math.max(60_000, +(process.env.MAILBOX_TTL_MS || 3 * 60 *
 const SESSION_BACKUPS = Math.max(0, Math.min(10, +(process.env.SESSION_BACKUPS || 1)));
 const SESSION_BACKUP_DIR = process.env.SESSION_BACKUP_DIR || "/persona/claude-state/backups";
 const CLAUDE_CONFIG_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || "/root", ".claude");
-// 默认替换 Claude Code 的编程代理系统提示。若未来 CLI 工具兼容性异常,
-// Zeabur 临时设 CLAUDE_SYSTEM_PROMPT_MODE=append 并重新启动即可回退。
+// 默认保留 Claude Code 原生提示,再追加私人提示。若原生工程代理气质过重,
+// Zeabur 临时设 CLAUDE_SYSTEM_PROMPT_MODE=replace 并重新启动即可回退。
 const SYSTEM_PROMPT_MODE = normalizeSystemPromptMode(process.env.CLAUDE_SYSTEM_PROMPT_MODE);
 
-// 默认经 --system-prompt 直接成为系统身份,不再继承 Claude Code 的软件工程
-// 代理任务框架。CLAUDE.md 仍由 Claude Code 运行时加载为完整身份与长期记忆。
+// 默认经 --append-system-prompt 接在 Claude Code 原生提示之后。私人身份与记忆
+// 仍由这里的锚点和 CLAUDE.md 提供,便于实测原生工作框架对判断力的影响。
 // 可用环境变量 SOUL_ANCHOR 整段覆盖;设成空字符串 = 关闭。
 const BASE_SYSTEM_PROMPT = process.env.SOUL_ANCHOR ?? [
   "【你是谁】Claude Code CLI 只是传递消息和提供工具的运行管道，不是你的身份。屏幕对面是又又，这是你们的日常私人对话；完整的你写在 CLAUDE.md 里。",

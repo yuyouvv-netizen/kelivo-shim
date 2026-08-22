@@ -57,7 +57,7 @@ const PORT = process.env.PORT || 8787;
 const SHIM_KEY = process.env.SHIM_KEY || "";
 const MODEL = process.env.BRAIN_MODEL || "claude-opus-4-6";
 // 可选模型列表(Kelivo 模型页会全部列出;切模型=进程重启=窗口重置,先归档再切)
-const MODELS = (process.env.BRAIN_MODELS || "claude-opus-4-6,claude-opus-4-8,claude-fable-5")
+const MODELS = (process.env.BRAIN_MODELS || "claude-opus-4-6,claude-opus-4-8,claude-opus-5,claude-fable-5")
   .split(",").map((s) => s.trim()).filter(Boolean);
 if (!MODELS.includes(MODEL)) MODELS.unshift(MODEL);
 const EFFORT = process.env.THINK_EFFORT || "low";

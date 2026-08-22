@@ -127,6 +127,31 @@ if [ -n "${BIRD_MCP_URL:-}" ]; then
   echo "[entrypoint] toy MCP configured"
 fi
 
+# Claude Code 的 MCP 配置允许给单个服务设置 env；该层会覆盖父进程环境。
+# 旧私有配置若固定过 ~/.gmail-mcp，就会在上面的 /persona 选择之后仍读旧令牌。
+# 把同一对持久卷路径写进 gmail 服务自身的 env，确保所有启动层一致。这里只写
+# 文件路径，不写 OAuth 内容；其他 MCP 条目原样保留。
+if [ -n "${GMAIL_OAUTH_PATH:-}" ] && [ -n "${GMAIL_CREDENTIALS_PATH:-}" ]; then
+  if ! node -e '
+    const fs = require("fs");
+    const paths = [".mcp.json", "/persona/.mcp.json"];
+    for (const p of paths) {
+      if (!fs.existsSync(p)) continue;
+      const j = JSON.parse(fs.readFileSync(p, "utf8"));
+      const gmail = j.mcpServers?.gmail;
+      if (!gmail || !gmail.command) continue;
+      gmail.env ||= {};
+      gmail.env.GMAIL_OAUTH_PATH = process.env.GMAIL_OAUTH_PATH;
+      gmail.env.GMAIL_CREDENTIALS_PATH = process.env.GMAIL_CREDENTIALS_PATH;
+      fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+    }
+  '; then
+    echo "[entrypoint] ERROR: could not pin Gmail MCP credential paths"
+    exit 1
+  fi
+  echo "[entrypoint] Gmail MCP config pinned to private-volume credential paths"
+fi
+
 # --- 人设保险箱:根治白板 ------------------------------------------------------
 # 沈渡的人设(CLAUDE.md / profile-instructions.md / 渡-self-prompt-v5.md 等)存在持久卷
 # /persona 里。/src 是容器临时盘,换新容器/重建就没了——所以开机时若 /src 缺某个人设文件,

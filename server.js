@@ -15,6 +15,7 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { registerClaudeOauthAdmin } from "./claude-oauth-admin.js";
 import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
+import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
@@ -113,6 +114,16 @@ const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ??
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const turnState = new TurnStateStore({ dir: TURN_STATE_DIR, mailboxTtlMs: MAILBOX_TTL_MS });
+let gmailAuthDiagnostic = { status: "checking" };
+diagnoseStoredGmailAuth({ mcpConfigFile: MCP_CONFIG })
+  .then((result) => {
+    gmailAuthDiagnostic = { status: "complete", ...result };
+    log(`[gmail-auth-diagnostic] refresh=${result.refresh} profile=${result.gmailProfile} source=${result.source} mcpPaths=${result.mcpConfig.oauthPathMatches && result.mcpConfig.credentialsPathMatches ? "match" : "mismatch"}`);
+  })
+  .catch(() => {
+    gmailAuthDiagnostic = { status: "error" };
+    log("[gmail-auth-diagnostic] unexpected diagnostic failure");
+  });
 
 // ---- 长对话记忆保全 ----------------------------------------------------------
 // 明确固定 Claude Code 的 auto-compact 窗口,让「快满了」监测与真实压缩线使用同一把尺。
@@ -802,6 +813,7 @@ app.get("/health", (_q, r) => r.json({
 }));
 app.get("/debug", (_q, r) => r.json({
   cache1h: process.env.ENABLE_PROMPT_CACHING_1H || "unset", lastUsage,
+  gmailAuth: gmailAuthDiagnostic,
   window: {
     tokens: windowTokens, limit: WINDOW_LIMIT, pct: windowPct(windowTokens, WINDOW_LIMIT),
     autoCompactWindow: AUTO_COMPACT_WINDOW,

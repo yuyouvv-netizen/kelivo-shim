@@ -54,17 +54,23 @@ if [ -n "$ELEVENLABS_API_KEY" ] && ! command -v ffmpeg >/dev/null 2>&1; then
     || echo "[entrypoint] ffmpeg install failed; voice works only if opus-direct is available"
 fi
 
-# gmail 凭据也进保险箱(2026-07-23 事故:一次部署换容器把 /src/gmail-auth 冲没了,
-# gmail MCP 断连。凭据含 OAuth 令牌不能进公开仓库,所以正本存 /persona 卷、这里开机恢复。
-# ⚠️ 前提:得先把 gmail-auth/ 放进 /persona 卷(目前凭据丢失、待栖栖找回或重建后放入)。
-if [ ! -d gmail-auth ] && [ -d /persona/gmail-auth ]; then
-  cp -r /persona/gmail-auth /src/gmail-auth && echo "[entrypoint] restored gmail-auth from /persona"
-fi
-# Gmail MCP: creds uploaded in gmail-auth/ (non-dot dir survives upload); server
-# reads them from ~/.gmail-mcp/. Pre-install so npx resolves without a cold download.
-if [ -d gmail-auth ]; then
-  mkdir -p "${HOME:-/root}/.gmail-mcp"
-  cp gmail-auth/* "${HOME:-/root}/.gmail-mcp/" || true
+# Gmail OAuth 正本在持久卷。过去先复制到 /src、再复制到 ~/.gmail-mcp；同一容器
+# 重启时 /src 的旧副本仍在，便会盖回刚换好的邮箱令牌。现在直接把 Gmail MCP 的
+# 官方路径环境变量指向 /persona，彻底取消多层副本竞态。只有完整的一对文件才启用，
+# 避免 OAuth 客户端和令牌来自不同目录。
+GMAIL_PERSONA_DIR="${GMAIL_PERSONA_DIR:-/persona/gmail-auth}"
+GMAIL_BUNDLED_DIR="${GMAIL_BUNDLED_DIR:-/src/gmail-auth}"
+if [ -f "$GMAIL_PERSONA_DIR/gcp-oauth.keys.json" ] && [ -f "$GMAIL_PERSONA_DIR/credentials.json" ]; then
+  export GMAIL_OAUTH_PATH="$GMAIL_PERSONA_DIR/gcp-oauth.keys.json"
+  export GMAIL_CREDENTIALS_PATH="$GMAIL_PERSONA_DIR/credentials.json"
+  echo "[entrypoint] Gmail MCP reads verified credentials directly from private volume"
+elif [ -f "$GMAIL_BUNDLED_DIR/gcp-oauth.keys.json" ] && [ -f "$GMAIL_BUNDLED_DIR/credentials.json" ]; then
+  # 兼容没有 /persona 持久卷的上游部署；本项目线上不会走到这里。
+  export GMAIL_OAUTH_PATH="$GMAIL_BUNDLED_DIR/gcp-oauth.keys.json"
+  export GMAIL_CREDENTIALS_PATH="$GMAIL_BUNDLED_DIR/credentials.json"
+  echo "[entrypoint] Gmail MCP reads bundled credentials"
+else
+  echo "[entrypoint] Gmail MCP credentials incomplete; keeping package defaults"
 fi
 
 # MCP config:优先从 /persona 保险箱恢复真实配置(2026-07-22 事故:换容器后 /src 丢失

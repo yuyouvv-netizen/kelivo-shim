@@ -7,13 +7,11 @@ export function normalizeSystemPromptMode(raw) {
 }
 
 export function buildSystemPrompt({
-  soulAnchor,
-  hardRule,
-  toolBoundaryRule,
+  basePrompt,
   memoryContinuityRule,
   kelivoSystem,
 }) {
-  const sections = [soulAnchor, hardRule, toolBoundaryRule, memoryContinuityRule]
+  const sections = [basePrompt, memoryContinuityRule]
     .map((section) => String(section || "").trim())
     .filter(Boolean);
   const worldbook = String(kelivoSystem || "").trim();

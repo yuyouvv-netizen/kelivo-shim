@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { randomUUID } from "crypto";
 
 export const DEFAULT_IMPORT_DIR = "/persona/import-history";
 
@@ -76,31 +77,39 @@ export class ImportHistoryStore {
   }
 
   prepare(payload) {
+    if (this.loadPending()) {
+      const error = new Error("an import is already pending; cancel it before preparing another one");
+      error.code = "IMPORT_ALREADY_PENDING";
+      throw error;
+    }
     const messages = normalizeImportedMessages(payload);
     const chars = messages.reduce((n, m) => n + m.content.length, 0);
     const record = {
       version: 1,
+      id: randomUUID(),
       source: String(payload?.source || "claude-share").slice(0, 80),
       createdAt: new Date().toISOString(),
       messages,
       chars,
     };
     ensureDir(this.dir);
-    if (fs.existsSync(this.sessionStateFile)) {
-      fs.copyFileSync(this.sessionStateFile, this.preImportSessionFile);
-      fs.unlinkSync(this.sessionStateFile);
-    }
+    if (fs.existsSync(this.sessionStateFile)) fs.copyFileSync(this.sessionStateFile, this.preImportSessionFile);
     jsonWrite(this.pendingFile, record);
     jsonWrite(this.statusFile, {
       state: "pending", messages: messages.length, chars,
       createdAt: record.createdAt, consumedAt: null, source: record.source,
     });
+    // Persist the pending package before releasing the old pointer. If the
+    // process stops between these operations, startup's ensureFreshSession()
+    // still sees pending.json and removes any pointer written during shutdown.
+    if (fs.existsSync(this.sessionStateFile)) fs.unlinkSync(this.sessionStateFile);
     return this.status();
   }
 
-  consume() {
+  consume(expectedId = null) {
     const pending = this.loadPending();
     if (!pending) return null;
+    if (expectedId && pending.id !== expectedId) return null;
     try { fs.unlinkSync(this.pendingFile); } catch {}
     jsonWrite(this.statusFile, {
       state: "consumed", messages: pending.messages.length, chars: pending.chars,
@@ -116,6 +125,7 @@ export class ImportHistoryStore {
       ensureDir(path.dirname(this.sessionStateFile));
       fs.copyFileSync(this.preImportSessionFile, this.sessionStateFile);
     }
+    if (pending) try { fs.unlinkSync(this.preImportSessionFile); } catch {}
     jsonWrite(this.statusFile, { state: "cleared", messages: 0, chars: 0,
       createdAt: null, consumedAt: null, source: null });
     return this.status();

@@ -36,9 +36,27 @@ test("prepare backs up session pointer and consume is one-shot", () => {
   assert.equal(status.state, "pending");
   assert.equal(fs.existsSync(state), false);
   assert.equal(fs.existsSync(path.join(root, "imports", "pre-import-session.json")), true);
-  assert.equal(store.consume().messages.length, 2);
+  const pending = store.loadPending();
+  assert.ok(pending.id);
+  assert.equal(store.consume("not-the-same-import"), null);
+  assert.equal(store.consume(pending.id).messages.length, 2);
   assert.equal(store.consume(), null);
   assert.equal(store.status().state, "consumed");
+});
+
+test("a pending package cannot be silently overwritten", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "import-history-"));
+  const store = new ImportHistoryStore({
+    dir: path.join(root, "imports"),
+    sessionStateFile: path.join(root, "session.json"),
+  });
+  store.prepare({ messages: [
+    { role: "user", content: "first" }, { role: "assistant", content: "reply" },
+  ] });
+  assert.throws(() => store.prepare({ messages: [
+    { role: "user", content: "replacement" }, { role: "assistant", content: "reply" },
+  ] }), (error) => error?.code === "IMPORT_ALREADY_PENDING");
+  assert.equal(store.loadPending().messages[0].content, "first");
 });
 
 test("pending import deletes a session pointer recreated during shutdown", () => {
@@ -69,4 +87,5 @@ test("cancelling a pending import restores the previous session pointer when saf
   store.clear();
   assert.equal(store.status().state, "cleared");
   assert.match(fs.readFileSync(state, "utf8"), /\"old\"/);
+  assert.equal(fs.existsSync(path.join(root, "imports", "pre-import-session.json")), false);
 });

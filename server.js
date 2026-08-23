@@ -15,12 +15,14 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { registerClaudeOauthAdmin } from "./claude-oauth-admin.js";
 import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
+import { registerImportHistoryAdmin } from "./import-history-admin.js";
 import { registerSessionAdmin } from "./session-admin.js";
 import { registerWakeAdmin } from "./wake-admin.js";
 import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
+import { ImportHistoryStore } from "./import-history.js";
 import { archiveToolResultOk } from "./archive.js";
 import { isKelivoTitleRequest, localTitleForRequest } from "./title.js";
 import {
@@ -86,6 +88,9 @@ const TURN_INTERRUPT_GRACE_MS = interruptGraceMsFromEnv(process.env.TURN_INTERRU
 const SSE_HEARTBEAT_MS = sseHeartbeatMsFromEnv(process.env.SSE_HEARTBEAT_MS);
 const SESSION_RESUME = process.env.SESSION_RESUME !== "0";
 const SESSION_STATE_FILE = process.env.SESSION_STATE_FILE || "/persona/claude-state/shim-session.json";
+const IMPORT_HISTORY_DIR = process.env.IMPORT_HISTORY_DIR || "/persona/import-history";
+const IMPORT_MAX_MESSAGES = Math.max(2, +(process.env.IMPORT_MAX_MESSAGES || 4000));
+const IMPORT_MAX_CHARS = Math.max(10_000, +(process.env.IMPORT_MAX_CHARS || 2_000_000));
 const TURN_STATE_DIR = process.env.TURN_STATE_DIR || "/persona/turn-state";
 const MAILBOX_TTL_MS = Math.max(60_000, +(process.env.MAILBOX_TTL_MS || 3 * 60 * 1000));
 const SESSION_BACKUPS = Math.max(0, Math.min(10, +(process.env.SESSION_BACKUPS || 1)));
@@ -152,6 +157,21 @@ const AUTO_COMPACT_WINDOW = Number(autoCompactRaw) > 0
 const REHYDRATE_MAX_CHARS = process.env.REHYDRATE_MAX_CHARS === undefined
   ? Math.floor(AUTO_COMPACT_WINDOW * 0.6)
   : Math.max(0, Number(process.env.REHYDRATE_MAX_CHARS) || 0);
+const REHYDRATE_MAX_MESSAGES = process.env.REHYDRATE_MAX_MESSAGES === undefined
+  ? Number.POSITIVE_INFINITY
+  : Math.max(0, Number(process.env.REHYDRATE_MAX_MESSAGES) || 0);
+// Imported official-app history enters through the same recovery path. Never
+// accept a package larger than that path can actually deliver: silently
+// dropping the beginning would make a successful-looking move incomplete.
+const IMPORT_SAFE_MAX_CHARS = Math.min(IMPORT_MAX_CHARS, REHYDRATE_MAX_CHARS);
+const IMPORT_SAFE_MAX_MESSAGES = Math.min(IMPORT_MAX_MESSAGES, REHYDRATE_MAX_MESSAGES);
+const importHistory = new ImportHistoryStore({
+  dir: IMPORT_HISTORY_DIR,
+  sessionStateFile: SESSION_STATE_FILE,
+});
+if (importHistory.ensureFreshSession()) {
+  log("[import] pending move forced a fresh native session");
+}
 const WINDOW_LIMIT = +(process.env.WINDOW_LIMIT || compactThreshold(AUTO_COMPACT_WINDOW));
 const WINDOW_WARN_PCT = +(process.env.WINDOW_WARN_PCT || 80);
 const WINDOW_AUTO_ARCHIVE = process.env.WINDOW_AUTO_ARCHIVE !== "0";
@@ -888,12 +908,23 @@ registerWakeAdmin(app, {
   }),
   setMode: (mode) => wakeMode.set(mode),
 });
+registerImportHistoryAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  store: importHistory,
+  maxMessages: IMPORT_SAFE_MAX_MESSAGES,
+  maxChars: IMPORT_SAFE_MAX_CHARS,
+  isBusy: () => shuttingDown || busy || !!turn || queue.length > 0,
+  requestRestart: () => gracefulShutdown("import-history"),
+  log,
+});
 app.get("/health", (_q, r) => r.json({
   ok: !shuttingDown, model: spawnedModel, models: MODELS, busy, queued: queue.length, shuttingDown,
 }));
 app.get("/debug", (_q, r) => r.json({
   cache1h: process.env.ENABLE_PROMPT_CACHING_1H || "unset", lastUsage,
   gmailAuth: gmailAuthDiagnostic,
+  import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
   window: {
     tokens: windowTokens, limit: WINDOW_LIMIT, pct: windowPct(windowTokens, WINDOW_LIMIT),
@@ -1004,6 +1035,14 @@ function wakeTurn(idleUserMin) {
 function wakeTick(force) {
   const nowMs = Date.now();
   const idleTurnMs = nowMs - lastTurnAt;
+  // A prepared official-chat move belongs to the next real Kelivo message.
+  // Keep this explicit even though a normal prepare restart also has no
+  // resident process, so future wake changes cannot steal the fresh session.
+  if (importHistory.loadPending()) {
+    const status = { triggered: false, reason: "import-pending" };
+    log("[wake] skipped", status.reason);
+    return status;
+  }
   const status = autonomousWakeStatus({
     hasProcess: !!proc,
     busy,
@@ -1517,6 +1556,15 @@ function timeStamp(prevUserAt) {
 // 运维命令。想换人由聊天外的操作完成(例如切换模型);日常故障则优先续接原 session。
 // Kelivo 与 Telegram 共用的进队逻辑:时间戳 → enqueue
 function submitTurn(text, images, sink, opts = {}) {
+  // A prepared official-chat package owns the next native turn. No Telegram,
+  // wake, archive or ordinary request may create the fresh process first.
+  if (importHistory.loadPending()) {
+    const warning = "⚠️〔搬家门正在等待〕请从准备好的空白 Kelivo 对话发送官端原本的下一句话。";
+    log("[import] blocked a non-import turn", opts.src || "unknown");
+    try { sink?.text?.(warning); } catch {}
+    try { sink?.finish?.(undefined, warning); } catch {}
+    return false;
+  }
   const newWindow = false;
   if (TIME_STAMP) text = `${timeStamp(lastUserAt)}\n${text}`;
   lastUserAt = Date.now(); // 自主时间空闲计时基准
@@ -1526,6 +1574,15 @@ function submitTurn(text, images, sink, opts = {}) {
     model: opts.model || spawnedModel, recovery: opts.recovery, src: opts.src || "kelivo",
     requestKey: opts.requestKey || null,
   });
+  return true;
+}
+
+function importEligible(messages) {
+  if (!Array.isArray(messages) || !messages.length || messages.length > 2) return false;
+  if (messages.at(-1)?.role !== "user") return false;
+  const lastUser = [...messages].reverse().find((message) => message.role === "user");
+  const text = contentToText(lastUser?.content ?? "").trim();
+  return !!text && !isKelivoTitleRequest(text);
 }
 
 function handleMessages(req, res) {
@@ -1537,8 +1594,8 @@ function handleMessages(req, res) {
     if (key !== SHIM_KEY) return res.status(401).json({ type: "error", error: { type: "authentication_error", message: "bad key" } });
   }
   const body = req.body || {};
-  const messages = (body.messages || []).filter((m) => m.role === "user" || m.role === "assistant");
-  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const currentMessages = (body.messages || []).filter((m) => m.role === "user" || m.role === "assistant");
+  const lastUser = [...currentMessages].reverse().find((m) => m.role === "user");
   const text = contentToText(lastUser?.content ?? "");
   const stream = body.stream !== false;
 
@@ -1556,24 +1613,38 @@ function handleMessages(req, res) {
     return;
   }
 
-  const images = extractImages(messages);
-  const recovery = recoveryTranscript(messages, {
-    maxMessages: process.env.REHYDRATE_MAX_MESSAGES,
-    maxChars: REHYDRATE_MAX_CHARS,
-  });
+  const pendingImport = importHistory.loadPending();
+  if (pendingImport && !importEligible(currentMessages)) {
+    return res.status(409).json({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "A Claude chat import is waiting. Send the next message from a new, empty Kelivo chat.",
+      },
+    });
+  }
+
+  const images = extractImages(currentMessages);
   const system = systemToText(body.system);
   // Kelivo 选的模型;不在名单里(或没传)就沿用当前模型
   const model = MODELS.includes(body.model) ? body.model : spawnedModel;
-  const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
-  const requestKey = requestFingerprint({ messages, system, model });
+  // Keep the request identity based on the actual Kelivo request. The imported
+  // prefix is one-shot, but a phone reconnect must still reattach to or replay
+  // the same first turn instead of submitting it a second time.
+  const requestKey = requestFingerprint({ messages: currentMessages, system, model });
   const existing = inflightTurns.get(requestKey);
   if (existing) {
+    const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
     existing.add(sse);
     log("[delivery] identical request reattached to active turn", requestKey.slice(0, 8));
     return;
   }
   const missed = turnState.findReplay(requestKey);
-  if (missed) {
+  // A new import must not be mistaken for an older mailbox entry whose first
+  // user sentence happens to be identical. Once the import is claimed, normal
+  // reconnects use this mailbox path again.
+  if (missed && !pendingImport) {
+    const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
     log("[delivery] replaying completed response from mailbox", requestKey.slice(0, 8));
     sse.text?.(missed.fullText);
     const delivered = sse.isConnected?.() !== false;
@@ -1581,6 +1652,29 @@ function handleMessages(req, res) {
     if (delivered) turnState.markReplayed(requestKey);
     return;
   }
+
+  let imported = null;
+  if (pendingImport) {
+    imported = importHistory.consume(pendingImport.id);
+    if (!imported) {
+      return res.status(409).json({
+        type: "error",
+        error: { type: "conflict_error", message: "The pending Claude chat changed; reload the import page and try again." },
+      });
+    }
+    res.setHeader("x-kelivo-imported-history", String(imported.messages.length));
+    log("[import] consumed by fresh Kelivo chat", {
+      messages: imported.messages.length,
+      chars: imported.chars,
+    });
+  }
+
+  const messages = imported ? [...imported.messages, ...currentMessages] : currentMessages;
+  const recovery = recoveryTranscript(messages, {
+    maxMessages: REHYDRATE_MAX_MESSAGES,
+    maxChars: REHYDRATE_MAX_CHARS,
+  });
+  const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
   const delivery = new ReplayableDelivery(sse);
   inflightTurns.set(requestKey, delivery);
   submitTurn(text, images, delivery, { system, model, src: "kelivo", recovery, requestKey });

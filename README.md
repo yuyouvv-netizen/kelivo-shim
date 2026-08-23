@@ -12,6 +12,7 @@
 - 卡住或进程中断后绝不自动重发用户消息;本轮可放弃,由用户决定是否重新询问
 - 自主唤醒默认只在新加坡时间 08:00-24:00、空闲约 50-60 分钟后复用已恢复历史的常驻进程;手机 `/admin/wake` 可热切换全天模式,部署或进程重启后仍保留选择并等待安全的常驻会话
 - 手机打开 `/admin/session` 并用 `SHIM_KEY` 登录,可不经归档主动放下碎片化原生会话;后端保持空白直到新 4.6 对话的第一条真实消息
+- 手机打开 `/admin/import` 可把 Claude 官端分享记录封成一次性搬家包裹;待迁移时封住心跳和旧窗口,只让空白 Kelivo 对话的第一条真实消息接入
 - 全云端,电脑不用开;走订阅,零 API 计费
 
 ```
@@ -42,6 +43,8 @@
 | `turn-watchdog.js` | 单轮无活动超时看门狗,先温和中止本轮、再按需重启 |
 | `wake-mode.js` | 自主心跳白天/全天模式的私人磁盘持久化与时段判断 |
 | `wake-admin.js` | 手机 `/admin/wake` 心跳时段开关,与会话开关同样使用 `SHIM_KEY`、CSRF 和安全 Cookie |
+| `import-history.js` | Claude 官端历史的一次性私有持久化、旧会话指针备份/恢复与原子消费 |
+| `import-history-admin.js` | 手机 `/admin/import` 搬家门,使用 `SHIM_KEY`、CSRF、安全 Cookie 和本地 JSON 文件读取 |
 | `window.js` | Claude Code 窗口用量计算与压缩阈值 |
 | `compact-instructions.js` | PreCompact 安全摘要钩子 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |

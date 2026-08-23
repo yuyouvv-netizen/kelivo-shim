@@ -16,6 +16,7 @@ import { randomUUID } from "crypto";
 import { registerClaudeOauthAdmin } from "./claude-oauth-admin.js";
 import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
 import { registerSessionAdmin } from "./session-admin.js";
+import { registerWakeAdmin } from "./wake-admin.js";
 import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
@@ -26,10 +27,10 @@ import {
   autonomousWakeStatus,
   interruptControlRequest,
   interruptGraceMsFromEnv,
-  isSingaporeWakeWindow,
   TurnWatchdog,
   turnTimeoutMsFromEnv,
 } from "./turn-watchdog.js";
+import { WakeModeStore } from "./wake-mode.js";
 import { createAnthropicSSE, sseHeartbeatMsFromEnv } from "./sse.js";
 import { ReplayableDelivery } from "./delivery.js";
 import { requestFingerprint, TurnStateStore } from "./turn-state.js";
@@ -90,6 +91,7 @@ const MAILBOX_TTL_MS = Math.max(60_000, +(process.env.MAILBOX_TTL_MS || 3 * 60 *
 const SESSION_BACKUPS = Math.max(0, Math.min(10, +(process.env.SESSION_BACKUPS || 1)));
 const SESSION_BACKUP_DIR = process.env.SESSION_BACKUP_DIR || "/persona/claude-state/backups";
 const CLAUDE_CONFIG_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || "/root", ".claude");
+const WAKE_MODE_FILE = process.env.WAKE_MODE_FILE || "/persona/wake-mode.json";
 // 默认保留 Claude Code 原生提示,再追加私人提示。若原生工程代理气质过重,
 // Zeabur 临时设 CLAUDE_SYSTEM_PROMPT_MODE=replace 并重新启动即可回退。
 const SYSTEM_PROMPT_MODE = normalizeSystemPromptMode(process.env.CLAUDE_SYSTEM_PROMPT_MODE);
@@ -119,6 +121,11 @@ const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ??
     : "");
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+const wakeMode = new WakeModeStore({
+  file: WAKE_MODE_FILE,
+  defaultMode: process.env.WAKE_MODE_DEFAULT,
+  log,
+});
 const turnState = new TurnStateStore({ dir: TURN_STATE_DIR, mailboxTtlMs: MAILBOX_TTL_MS });
 let gmailAuthDiagnostic = { status: "checking" };
 diagnoseStoredGmailAuth({ mcpConfigFile: MCP_CONFIG })
@@ -868,6 +875,19 @@ registerSessionAdmin(app, {
   }),
   startFreshSession: startManualFreshSession,
 });
+registerWakeAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  log,
+  getStatus: () => ({
+    mode: wakeMode.get(),
+    activeHoursSingapore: wakeMode.activeHours(),
+    checkMin: WAKE_CHECK_MIN,
+    idleMin: WAKE_IDLE_MIN,
+    bark: !!BARK_KEY,
+  }),
+  setMode: (mode) => wakeMode.set(mode),
+});
 app.get("/health", (_q, r) => r.json({
   ok: !shuttingDown, model: spawnedModel, models: MODELS, busy, queued: queue.length, shuttingDown,
 }));
@@ -924,7 +944,8 @@ app.get("/debug", (_q, r) => r.json({
   wake: {
     bark: !!BARK_KEY,
     tg: !!TG_TOKEN, tgLocked: !!tgChatId,
-    activeHoursSingapore: "08:00-24:00",
+    mode: wakeMode.get(),
+    activeHoursSingapore: wakeMode.activeHours(),
     checkMin: WAKE_CHECK_MIN,
     idleMin: WAKE_IDLE_MIN,
     lastUserAt: new Date(lastUserAt).toISOString(),
@@ -934,11 +955,11 @@ app.get("/debug", (_q, r) => r.json({
 }));
 
 // ---- 自主时间:定时唤醒,AI 自己决定说话还是静默续命 ----------------------------
-// 只在新加坡时间 08:00-24:00 运行,夜间不向 Claude 发任何自主提示。距离上一轮
+// 默认只在新加坡时间 08:00-24:00 运行;手机管理页可热切换为 24 小时。距离上一轮
 // 对话(任何 turn,含唤醒轮)超过 WAKE_IDLE_MIN 分钟才喂一条【系统·自主时间】:
 //   想说话 → Bark 推送到手机(Kelivo 里看不到,但常驻进程自己记得,回来自然接上)
-//   没话说 → 只回【沉默】。这仍是一轮真实 Claude 调用,所以严格限制到白天且
-//            默认约每 50-60 分钟一轮,尽量在一小时缓存过期前续上。
+//   没话说 → 只回【沉默】。这仍是一轮真实 Claude 调用,所以保留进程/历史/
+//            忙碌安全门,并默认约每 50-60 分钟一轮,尽量在一小时缓存过期前续上。
 const BARK_KEY = process.env.BARK_KEY || "";
 const WAKE_CHECK_MIN = +(process.env.WAKE_CHECK_MIN || 10); // 只检查本地状态,不会调用 Claude
 const WAKE_IDLE_MIN = +(process.env.WAKE_IDLE_MIN || 50);   // 略小于一小时缓存 TTL
@@ -990,7 +1011,7 @@ function wakeTick(force) {
     needsHistory: procNeedsHistory,
     idleTurnMs,
     idleThresholdMs: WAKE_IDLE_MIN * 60000,
-    withinWakeWindow: isSingaporeWakeWindow(nowMs),
+    withinWakeWindow: wakeMode.allows(nowMs),
     force,
   });
   if (!status.triggered) {

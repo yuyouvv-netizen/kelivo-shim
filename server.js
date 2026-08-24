@@ -18,6 +18,7 @@ import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
 import { registerImportHistoryAdmin } from "./import-history-admin.js";
 import { registerSessionAdmin } from "./session-admin.js";
 import { registerWakeAdmin } from "./wake-admin.js";
+import { registerWindowAdmin } from "./window-admin.js";
 import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
@@ -203,7 +204,7 @@ function checkWindowUsage() {
   if (!windowWarned && pct >= WINDOW_WARN_PCT) {
     windowWarned = true;
     log("[window] warning", pct + "%", windowTokens, "/", activeWindowLimit);
-    notifyMemory(`⚠️ 对话窗口用到 ${pct}% 了。我会在压缩前自动让他归档一次。`);
+    notifyMemory(`⚠️ 对话窗口用到 ${pct}% 了。我会在压缩前自动让他留一封续接信。`);
   }
   if (WINDOW_AUTO_ARCHIVE && !windowAutoArchived && !windowArchiveQueued && pct >= WINDOW_ARCHIVE_PCT) {
     windowArchiveQueued = true;
@@ -626,6 +627,7 @@ function handleEvent(ev, sourceProc = proc) {
     lastCompactAt = Date.now();
     lastCompactPre = ev.compact_metadata?.pre_tokens || windowTokens;
     windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
+    if (turn) turn.peakPrefix = 0;
     log("[compact] boundary", ev.compact_metadata?.trigger || "?", "pre_tokens", lastCompactPre);
     return;
   }
@@ -915,6 +917,27 @@ registerWakeAdmin(app, {
   }),
   setMode: (mode) => wakeMode.set(mode),
 });
+registerWindowAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  log,
+  getStatus: () => ({
+    model: spawnedModel,
+    busy: busy || !!turn || queue.length > 0,
+    tokens: Math.max(windowTokens, turn?.peakPrefix || 0),
+    limit: activeWindowLimit,
+    pct: windowPct(Math.max(windowTokens, turn?.peakPrefix || 0), activeWindowLimit),
+    warnPct: WINDOW_WARN_PCT,
+    warned: windowWarned,
+    autoArchive: WINDOW_AUTO_ARCHIVE,
+    archivePct: WINDOW_ARCHIVE_PCT,
+    archiveQueued: windowArchiveQueued,
+    autoArchived: windowAutoArchived,
+    compactions,
+    lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,
+    lastCompactPreTokens: lastCompactPre || null,
+  }),
+});
 registerImportHistoryAdmin(app, {
   shimKey: SHIM_KEY,
   urlencoded: express.urlencoded,
@@ -939,7 +962,7 @@ app.get("/debug", (_q, r) => r.json({
     configuredAutoCompactWindow: CONFIGURED_AUTO_COMPACT_WINDOW,
     warnPct: WINDOW_WARN_PCT, warned: windowWarned,
     autoArchive: WINDOW_AUTO_ARCHIVE, archivePct: WINDOW_ARCHIVE_PCT,
-    archiveTool: "hold", memoryWording: "affirmative-v2",
+    archiveTool: "letter_write", memoryWording: "letter-v1",
     archiveQueued: windowArchiveQueued, autoArchived: windowAutoArchived,
     compactHook: COMPACT_HOOK, summaryMode: process.env.COMPACT_SUMMARY_MODE || "safe",
     compactions, lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,

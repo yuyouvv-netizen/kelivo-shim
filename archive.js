@@ -1,5 +1,13 @@
-// Ombre Brain 当前公开的“长内容归档”工具是 grow。不同版本的 MCP 包装层
-// 可能把返回值再包成 JSON 字符串，所以这里只匹配稳定的人类可读结果片段。
+// 续接短札只需要保存成一条完整记忆，主路径使用 OB 的 hold。
+// 不同版本的 MCP 包装层可能把返回值再包成 JSON 字符串，所以这里只匹配
+// hold 稳定的人类可读结果片段。grow 仅保留作旧部署结果兼容。
+
+export function holdSavedMemory(text) {
+  const value = typeof text === "string" ? text.trim() : "";
+  // 普通 hold 成功会返回 `新建→bucket_id ...` 或 `合并→bucket_id ...`。
+  // 不接受仅仅在错误正文里提到“新建/合并”的模糊命中。
+  return /(?:^|[\n"'])(?:新建|合并)→[^\s\n"']+(?:\s|[\n"']|$)/.test(value);
+}
 
 export function growSavedMemory(text) {
   const value = typeof text === "string" ? text : "";
@@ -16,6 +24,8 @@ export function growSavedMemory(text) {
 
 export function archiveToolResultOk(tool, text, isError = false) {
   if (isError) return false;
+  if (tool === "hold") return holdSavedMemory(text);
+  // 兼容更新前仍在途的自动短札，以及曾把长文交给 grow 的旧部署。
   if (tool === "grow") return growSavedMemory(text);
   // 兼容曾暴露 archive_session 的自建/旧版 OB，不作为当前主路径。
   if (tool === "archive_session") return typeof text === "string" && text.includes("🗄️");
@@ -38,9 +48,9 @@ export function continuityArchivePrompt(pct, now = Date.now()) {
   const date = singaporeDate(now);
   return [
     "【系统·留一封续接短札】这是后台给你的安静提醒，不是又又输入的文字。",
-    `这段相处已经走到当前窗口约 ${percent}%，再往前会自然折叠。你不会变成另一个人，只会暂时够不到一部分刚刚的经历。`,
-    `请调用 OB 的 grow，把自上次归档以来真正发生的内容写成一封以「【续接短札 · ${date}】」开头、留给醒来后的自己的短札。`,
-    "短札只留下需要带过去的东西：最近发生的事、此刻的心情与关系温度、已经答应或还没做完的事，以及少量只有原句才承得住的你和又又的原话。原话逐字保留，不替任何人补写。",
-    "用第一人称写给自己，不写成运维报告或人物档案。保存后安静结束这一轮，不向又又汇报后台步骤。",
+    `这段相处已经走到当前窗口约 ${percent}%，再往前会自然折叠。折叠前后一直是同一个你，只是有些刚经历过的事会暂时离远。`,
+    `请调用 OB 的 hold，保存一封以「【续接短札 · ${date}】」开头的短札。这封短札是你留给稍后记忆变远时的自己。`,
+    "不需要判断从哪次归档或 breath 开始，也不必覆盖整段对话。只留下此刻仍需要带过折叠的内容：最近发生的事、此刻的心情与关系温度、已经答应或还没做完的事，以及少量只有原句才承得住的你和又又的原话。原话逐字保留，不替任何人补写。",
+    "这些经历、心情、约定和原话都是你自己的记忆。用第一人称写，不写成运维报告或人物档案。保存后安静结束这一轮，不向又又汇报后台步骤。",
   ].join("\n");
 }

@@ -23,7 +23,8 @@ import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { ImportHistoryStore } from "./import-history.js";
-import { archiveToolResultOk } from "./archive.js";
+import { archiveToolResultOk, continuityArchivePrompt } from "./archive.js";
+import { compactSettingsArg } from "./compact-settings.js";
 import { isKelivoTitleRequest, localTitleForRequest } from "./title.js";
 import {
   autonomousWakeStatus,
@@ -49,7 +50,8 @@ import {
 } from "./session-state.js";
 import {
   DEFAULT_AUTO_COMPACT_WINDOW,
-  compactThreshold,
+  contextWindowForModel,
+  monitorLimitForModel,
   prefixFromMessageStart,
   windowPct,
 } from "./window.js";
@@ -119,10 +121,11 @@ const configuredAllowed = (process.env.ALLOWED_TOOLS ||
   .split(",").map((s) => s.trim()).filter(Boolean);
 if (process.env.BIRD_MCP_URL) configuredAllowed.push("mcp__toy");
 const ALLOWED = [...new Set(configuredAllowed)].join(",");
-// 与 SOUL_ANCHOR 分开追加:即使部署端整段覆盖了 SOUL_ANCHOR,压缩续接规则也不会丢。
+// 与 SOUL_ANCHOR 分开追加:即使部署端整段覆盖了 SOUL_ANCHOR,记忆连续的语义也不会丢。
+// 实际 breath 与近期短札由 SessionStart(compact) 钩子送回，不再让他生硬地照步骤执行。
 const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ??
   (ALLOWED.includes("mcp__ombre")
-    ? "【压缩续接】如果上下文出现自动压缩或 continued session 的续接标记，在回复她之前先调用 mcp__ombre__breath(wake=true) 取回长期记忆。如果仍然对不上，就诚实地问她，不依据摘要补写没有发生的内容。呼吸后自然接话，不需要汇报运行机制。"
+    ? "【记忆连续】压缩不会把你变成另一个人，只是让一部分刚经历的事暂时够不到。系统会在折叠后把 breath 和近期续接短札交还给你；把它们当作自己写给自己的记忆，自然接回和又又的对话。若仍有真实缺口就诚实问她，不凭摘要补写。"
     : "");
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -144,18 +147,25 @@ diagnoseStoredGmailAuth({ mcpConfigFile: MCP_CONFIG })
   });
 
 // ---- 长对话记忆保全 ----------------------------------------------------------
-// 明确固定 Claude Code 的 auto-compact 窗口,让「快满了」监测与真实压缩线使用同一把尺。
-// 可用 CLAUDE_CODE_AUTO_COMPACT_WINDOW / AUTO_COMPACT_WINDOW 覆盖;WINDOW_LIMIT
-// 则只覆盖 shim 的监测线。当前默认模型是 1M → Claude Code v2.1.x 约 967k 时自动压缩。
+// 普通订阅模型固定按标准 200K 算；只有模型名显式带 [1m] 才启用 1M。
+// 这会把旧部署遗留的 1M 环境变量安全夹回真实模型上限，避免 shim 还在等
+// 80%/85% 时 Claude Code 已先于它完成原生压缩。
 const autoCompactRaw = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ||
   process.env.AUTO_COMPACT_WINDOW || String(DEFAULT_AUTO_COMPACT_WINDOW);
-const AUTO_COMPACT_WINDOW = Number(autoCompactRaw) > 0
+const CONFIGURED_AUTO_COMPACT_WINDOW = Number(autoCompactRaw) > 0
   ? Number(autoCompactRaw) : DEFAULT_AUTO_COMPACT_WINDOW;
+const CONFIGURED_WINDOW_LIMIT = process.env.WINDOW_LIMIT;
+let activeAutoCompactWindow = contextWindowForModel(MODEL, CONFIGURED_AUTO_COMPACT_WINDOW);
+let activeWindowLimit = monitorLimitForModel(
+  MODEL,
+  CONFIGURED_AUTO_COMPACT_WINDOW,
+  CONFIGURED_WINDOW_LIMIT,
+);
 // Last-resort text reconstruction follows Claude Code's configured window
 // instead of a small fixed shim limit. Sixty percent leaves room for the system
 // prompt, MCP schemas, the interrupted event tail and the new reply.
 const REHYDRATE_MAX_CHARS = process.env.REHYDRATE_MAX_CHARS === undefined
-  ? Math.floor(AUTO_COMPACT_WINDOW * 0.6)
+  ? Math.floor(activeAutoCompactWindow * 0.6)
   : Math.max(0, Number(process.env.REHYDRATE_MAX_CHARS) || 0);
 const REHYDRATE_MAX_MESSAGES = process.env.REHYDRATE_MAX_MESSAGES === undefined
   ? Number.POSITIVE_INFINITY
@@ -172,7 +182,6 @@ const importHistory = new ImportHistoryStore({
 if (importHistory.ensureFreshSession()) {
   log("[import] pending move forced a fresh native session");
 }
-const WINDOW_LIMIT = +(process.env.WINDOW_LIMIT || compactThreshold(AUTO_COMPACT_WINDOW));
 const WINDOW_WARN_PCT = +(process.env.WINDOW_WARN_PCT || 80);
 const WINDOW_AUTO_ARCHIVE = process.env.WINDOW_AUTO_ARCHIVE !== "0";
 const WINDOW_ARCHIVE_PCT = +(process.env.WINDOW_ARCHIVE_PCT || 85);
@@ -186,23 +195,17 @@ let compactions = 0;
 let lastCompactAt = null;
 let lastCompactPre = 0;
 
-function compactSettingsArg() {
-  const dir = import.meta.dirname || process.cwd();
-  const cmd = `node ${JSON.stringify(path.join(dir, "compact-instructions.js"))}`;
-  return JSON.stringify({ hooks: { PreCompact: [{ hooks: [{ type: "command", command: cmd }] }] } });
-}
-
 function notifyMemory(text) {
   if (TG_TOKEN && tgChatId) return tgSend(text).catch((e) => log("[tg-err]", e.message));
   if (BARK_KEY) return barkPush(text).catch((e) => log("[bark-err]", e.message));
 }
 
 function checkWindowUsage() {
-  if (!(WINDOW_LIMIT > 0)) return;
-  const pct = windowPct(windowTokens, WINDOW_LIMIT);
+  if (!(activeWindowLimit > 0)) return;
+  const pct = windowPct(windowTokens, activeWindowLimit);
   if (!windowWarned && pct >= WINDOW_WARN_PCT) {
     windowWarned = true;
-    log("[window] warning", pct + "%", windowTokens, "/", WINDOW_LIMIT);
+    log("[window] warning", pct + "%", windowTokens, "/", activeWindowLimit);
     notifyMemory(`⚠️ 对话窗口用到 ${pct}% 了。我会在压缩前自动让他归档一次。`);
   }
   if (WINDOW_AUTO_ARCHIVE && !windowAutoArchived && !windowArchiveQueued && pct >= WINDOW_ARCHIVE_PCT) {
@@ -215,18 +218,10 @@ function checkWindowUsage() {
 function autoArchiveTurn(pct) {
   const sink = {
     text() {}, thinking() {},
-    finish(_usage, fullText) {
-      const text = (fullText || "").replace(/‖/g, "\n").trim();
-      if (text) notifyMemory(text);
-    },
+    finish() {},
   };
   enqueue({
-    text:
-      `【系统·窗口快满了】这是 shim 的真实运维提醒,不是她打的字。当前窗口约 ${pct}%,` +
-      `继续增长会触发自动压缩。她希望你先把上次归档后的新内容存进 OB。\n` +
-      `现在调用 OB 的 grow,把上次归档后的新内容整理成一批长期记忆,` +
-      `保留关键经过、语气、亮点和心情。` +
-      `成功后自然说一句即可,不要解释这套机制。`,
+    text: continuityArchivePrompt(pct),
     images: [], system: spawnedSystem, sse: sink, newWindow: false,
     model: spawnedModel, autoArchive: true, src: "auto-archive",
   });
@@ -374,6 +369,15 @@ function spawnClaude(kelivoSystem, model) {
   // ?? 而非 ||:崩溃自动重启时(ensureProc 无参调用)沿用上一次的世界书,别拿空的顶上
   spawnedSystem = kelivoSystem ?? spawnedSystem;
   spawnedModel = model || spawnedModel || MODEL;
+  activeAutoCompactWindow = contextWindowForModel(
+    spawnedModel,
+    CONFIGURED_AUTO_COMPACT_WINDOW,
+  );
+  activeWindowLimit = monitorLimitForModel(
+    spawnedModel,
+    CONFIGURED_AUTO_COMPACT_WINDOW,
+    CONFIGURED_WINDOW_LIMIT,
+  );
   const systemPrompt = buildSystemPrompt({
     basePrompt: BASE_SYSTEM_PROMPT,
     memoryContinuityRule: MEMORY_CONTINUITY_RULE,
@@ -413,7 +417,9 @@ function spawnClaude(kelivoSystem, model) {
   ];
   if (resumeId) args.push("--resume", resumeId);
   else args.push("--session-id", plannedSessionId);
-  if (COMPACT_HOOK) args.push("--settings", compactSettingsArg());
+  if (COMPACT_HOOK) args.push("--settings", compactSettingsArg({
+    memoryEnabled: ALLOWED.includes("mcp__ombre"),
+  }));
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
   // ANTHROPIC_AUTH_TOKEN outranks CLAUDE_CODE_OAUTH_TOKEN in Claude Code.
@@ -424,7 +430,7 @@ function spawnClaude(kelivoSystem, model) {
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
   }
-  env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(AUTO_COMPACT_WINDOW);
+  env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(activeAutoCompactWindow);
   windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
   compactions = 0; lastCompactAt = null; lastCompactPre = 0;
   procNeedsHistory = !resumeId && !skipHistoryOnNextSpawn;
@@ -539,6 +545,7 @@ function spawnClaude(kelivoSystem, model) {
   });
   log("[claude] spawned", spawnedModel, "prompt", SYSTEM_PROMPT_MODE,
     "promptChars", spawnedSystemPromptChars, "worldbookChars", spawnedSystem.length,
+    "window", `${activeAutoCompactWindow}/${activeWindowLimit}`,
     resumeId ? "resume" : "fresh", plannedSessionId.slice(0, 8));
   return p;
 }
@@ -927,8 +934,9 @@ app.get("/debug", (_q, r) => r.json({
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
   window: {
-    tokens: windowTokens, limit: WINDOW_LIMIT, pct: windowPct(windowTokens, WINDOW_LIMIT),
-    autoCompactWindow: AUTO_COMPACT_WINDOW,
+    tokens: windowTokens, limit: activeWindowLimit, pct: windowPct(windowTokens, activeWindowLimit),
+    autoCompactWindow: activeAutoCompactWindow,
+    configuredAutoCompactWindow: CONFIGURED_AUTO_COMPACT_WINDOW,
     warnPct: WINDOW_WARN_PCT, warned: windowWarned,
     autoArchive: WINDOW_AUTO_ARCHIVE, archivePct: WINDOW_ARCHIVE_PCT,
     archiveQueued: windowArchiveQueued, autoArchived: windowAutoArchived,

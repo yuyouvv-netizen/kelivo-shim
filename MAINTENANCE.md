@@ -43,10 +43,12 @@
 - **优雅停机/滚动副本**:SIGTERM 先停接新轮、interrupt 当前轮并 flush 事件日志,
   Claude 原生 transcript 每轮更新最近一份备份并记录大小与 SHA-256;原文件缺失时自动恢复,
   resume 明确失败时旁存原件后自动换入已校验副本。
-- **长窗保护**(`window.js`/`compact-instructions.js`):从每次 `message_start` 取真实
-  前缀,80% 提醒、85% 自动归档;当前默认模型按 1M 上下文固定 auto-compact,
-  约 967k 压缩。PreCompact 默认 `safe` 摘要,OB 失败时仍有摘要兜底;不要轻易把
-  `COMPACT_SUMMARY_MODE` 改成 `slim`。
+- **长窗保护**(`window.js`/`compact-settings.js`):从每次 `message_start` 取真实
+  前缀。普通订阅模型按标准 200K 上下文、约 167K 原生压缩线计算，80% 提醒、
+  85% 自动调用 `grow` 留一封第一人称续接短札；只有模型名显式带 `[1m]` 才按
+  扩展窗口处理。PreCompact 的 `safe` 摘要保留诚实兜底；压缩完成后的
+  `SessionStart(compact)` 自动取回 `breath` 与近期短札，再把它们作为同一个人的
+  记忆续接。不要轻易把 `COMPACT_SUMMARY_MODE` 改成 `slim`。
 - **人设保险箱**(`entrypoint.sh`):开机从 `/persona` 恢复缺失的人设与 `.mcp.json`。
 - **语音**(`voice.js`):`[语音]…[/语音]` 段落 → ElevenLabs opus 直出(失败降级
   mp3+ffmpeg,再失败降级文字)。突然不出声九成是 ElevenLabs 月度额度用完。

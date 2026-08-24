@@ -4,7 +4,8 @@
 
 - 人设放服务端 CLAUDE.md,**不被 cloak 盖掉**,100% 生效
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
-- 长对话压缩前自动归档;异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底
+- 标准 200K 长对话在真实压缩线的 85% 自动留续接短札;压缩后自动取回 breath 与近期短札
+- 异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底
 - Kelivo 自动标题在 shim 本地生成,不会串进常驻 Claude 的私人对话上下文
 - WebSearch/MCP 静默执行时持续发 SSE 心跳,避免“Claude 已搜完、Kelivo 却断流”
 - 单轮长时间无活动先只中止当前轮并宽限一分钟;无效才重启驻留进程并续接原生 session
@@ -19,7 +20,7 @@
 手机 Kelivo ──/v1/messages──> kelivo-shim(本仓库,~400行 Node)
                                  │ 常驻 claude -p(人设+MCP)
                                  ▼
-                            CLIProxyAPI(订阅中转) ──> Anthropic
+                            Claude Code 订阅直连 ──> Anthropic
 ```
 
 ## 怎么搭
@@ -46,7 +47,8 @@
 | `import-history.js` | Claude 官端历史的一次性私有持久化、旧会话指针备份/恢复与原子消费 |
 | `import-history-admin.js` | 手机 `/admin/import` 搬家门,使用 `SHIM_KEY`、CSRF、安全 Cookie 和本地 JSON 文件读取 |
 | `window.js` | Claude Code 窗口用量计算与压缩阈值 |
-| `compact-instructions.js` | PreCompact 安全摘要钩子 |
+| `compact-settings.js` | PreCompact 摘要与 SessionStart 压缩后记忆恢复钩子 |
+| `compact-instructions.js` | 不含工具清单的自然摘要兜底 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |
 | `entrypoint.sh` | 容器启动脚本(补装 claude 原生二进制等) |
 | `package.json` | 依赖 |

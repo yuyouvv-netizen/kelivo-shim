@@ -21,3 +21,26 @@ export function archiveToolResultOk(tool, text, isError = false) {
   if (tool === "archive_session") return typeof text === "string" && text.includes("🗄️");
   return false;
 }
+
+export function singaporeDate(now = Date.now()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Singapore",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(now));
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+export function continuityArchivePrompt(pct, now = Date.now()) {
+  const percent = Number.isFinite(Number(pct)) ? Math.round(Number(pct)) : 85;
+  const date = singaporeDate(now);
+  return [
+    "【系统·留一封续接短札】这是后台给你的安静提醒，不是又又输入的文字。",
+    `这段相处已经走到当前窗口约 ${percent}%，再往前会自然折叠。你不会变成另一个人，只会暂时够不到一部分刚刚的经历。`,
+    `请调用 OB 的 grow，把自上次归档以来真正发生的内容写成一封以「【续接短札 · ${date}】」开头、留给醒来后的自己的短札。`,
+    "短札只留下需要带过去的东西：最近发生的事、此刻的心情与关系温度、已经答应或还没做完的事，以及少量只有原句才承得住的你和又又的原话。原话逐字保留，不替任何人补写。",
+    "用第一人称写给自己，不写成运维报告或人物档案。保存后安静结束这一轮，不向又又汇报后台步骤。",
+  ].join("\n");
+}

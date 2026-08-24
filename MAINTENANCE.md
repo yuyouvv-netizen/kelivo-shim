@@ -20,9 +20,9 @@
 - **聊天不是运维命令**(`submitTurn`):任何聊天文字(包括「换窗口/开新窗口」)都不会触发
   新 session。归档由 AI 按人设约定自然处理;主动换人使用聊天外操作(当前切模型/世界书
   会创建新 session),避免把告别命令塞进两人的对话。
-- **安全阀**(`handleEvent`):续接短札用 OB 的 `hold` 保存成一条完整记忆;检测其
-  tool_result 中的 `新建→` / `合并→` 才算落盘成功。兼容更新前仍在途的 `grow`
-  与旧 `archive_session`。
+- **安全阀**(`handleEvent`):续接短札用 OB 的 `letter_write` 写入 Letter;检测其
+  tool_result 中的 `💌letter→… […]` 才算落盘成功。兼容更新前仍在途的 `hold`、
+  `grow` 与旧 `archive_session`。
   成功才允许换窗杀进程;否则保窗并提示。宁可不换窗,不丢记忆。
 - **原生续接**(`session-state.js`/`entrypoint.sh`):Claude Code transcript 的 `projects`
   目录接到 `/persona/claude-state`,shim 保存经模型+系统提示词指纹约束的 session ID。
@@ -46,9 +46,9 @@
   resume 明确失败时旁存原件后自动换入已校验副本。
 - **长窗保护**(`window.js`/`compact-settings.js`):从每次 `message_start` 取真实
   前缀。普通订阅模型按标准 200K 上下文、约 167K 原生压缩线计算，80% 提醒、
-  85% 自动调用 `hold` 留一封第一人称续接短札；只有模型名显式带 `[1m]` 才按
+  85% 自动调用 `letter_write` 留一封第一人称续接信；只有模型名显式带 `[1m]` 才按
   扩展窗口处理。PreCompact 的 `safe` 摘要保留诚实兜底；压缩完成后的
-  `SessionStart(compact)` 自动取回 `breath` 与近期短札，再把它们作为同一个人的
+  `SessionStart(compact)` 自动取回 `breath` 与最近三天的续接信，再把它们作为同一个人的
   记忆续接。不要轻易把 `COMPACT_SUMMARY_MODE` 改成 `slim`。
 - **人设保险箱**(`entrypoint.sh`):开机从 `/persona` 恢复缺失的人设与 `.mcp.json`。
 - **语音**(`voice.js`):`[语音]…[/语音]` 段落 → ElevenLabs opus 直出(失败降级

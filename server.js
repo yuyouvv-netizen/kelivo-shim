@@ -121,12 +121,9 @@ const configuredAllowed = (process.env.ALLOWED_TOOLS ||
   .split(",").map((s) => s.trim()).filter(Boolean);
 if (process.env.BIRD_MCP_URL) configuredAllowed.push("mcp__toy");
 const ALLOWED = [...new Set(configuredAllowed)].join(",");
-// 与 SOUL_ANCHOR 分开追加:即使部署端整段覆盖了 SOUL_ANCHOR,记忆连续的语义也不会丢。
-// 实际 breath 与近期短札由 SessionStart(compact) 钩子送回，不再让他生硬地照步骤执行。
-const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ??
-  (ALLOWED.includes("mcp__ombre")
-    ? "【记忆连续】压缩不会把你变成另一个人，只是让一部分刚经历的事暂时够不到。系统会在折叠后把 breath 和近期续接短札交还给你；把它们当作自己写给自己的记忆，自然接回和又又的对话。若仍有真实缺口就诚实问她，不凭摘要补写。"
-    : "");
+// 压缩后的具体恢复语义只在 SessionStart(compact) 事件中出现，避免常驻系统提示
+// 与 CLAUDE.md 重复。保留环境变量入口，供其他部署自行追加一条短锚点。
+const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ?? "";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const wakeMode = new WakeModeStore({
@@ -599,8 +596,8 @@ const OB_TRACE = process.env.OB_TRACE !== "0";
 const OB_TRACE_ARG_MAX = +(process.env.OB_TRACE_ARG_MAX || 300);
 const OB_TRACE_RES_MAX = +(process.env.OB_TRACE_RES_MAX || 400);
 const obToolNames = new Map(); // tool_use_id -> 短名(跨事件对齐返回)
-// tool_use_id -> 工具短名。当前 OB 用 grow 做长内容/日记归档；保留
-// archive_session 仅兼容曾暴露该工具的旧版/自建部署。
+// tool_use_id -> 工具短名。续接短札主路径用 hold；grow/archive_session 仅兼容
+// 更新前仍在途的调用或曾暴露旧接口的自建部署。
 const archiveCalls = new Map();
 const trunc = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 
@@ -651,7 +648,9 @@ function handleEvent(ev, sourceProc = proc) {
       if (cb.type === "tool_use" && typeof cb.name === "string" && cb.name.startsWith("mcp__ombre__")) {
         const short = cb.name.replace("mcp__ombre__", "");
         // 安全阀:记下归档写工具的调用 id,等真实返回确认至少落盘一条。
-        if ((short === "grow" || short === "archive_session") && cb.id) archiveCalls.set(cb.id, short);
+        if ((short === "hold" || short === "grow" || short === "archive_session") && cb.id) {
+          archiveCalls.set(cb.id, short);
+        }
         const label = OB_LABELS[short] || short;
         turn.sse?.thinking(`\n〔${label}〕\n`);
         if (OB_TRACE) {
@@ -702,8 +701,8 @@ function handleEvent(ev, sourceProc = proc) {
       });
     }
   }
-  // 安全阀:当前 OB 的 grow 成功返回包含 `N条|新C合M batch:g_xxx`；只有
-  // C+M>0 才算真正落盘。兼容 archive_session 的 🗄️ 标记。与 OB_TRACE 无关。
+  // 安全阀:hold 只有返回 `新建→…` 或 `合并→…` 才算真正落盘。
+  // 同时兼容更新前在途的 grow 与旧 archive_session。与 OB_TRACE 无关。
   if (ev.type === "user" && archiveCalls.size) {
     const cont = ev.message?.content;
     if (Array.isArray(cont)) for (const b of cont) {
@@ -939,6 +938,7 @@ app.get("/debug", (_q, r) => r.json({
     configuredAutoCompactWindow: CONFIGURED_AUTO_COMPACT_WINDOW,
     warnPct: WINDOW_WARN_PCT, warned: windowWarned,
     autoArchive: WINDOW_AUTO_ARCHIVE, archivePct: WINDOW_ARCHIVE_PCT,
+    archiveTool: "hold", memoryWording: "affirmative-v2",
     archiveQueued: windowArchiveQueued, autoArchived: windowAutoArchived,
     compactHook: COMPACT_HOOK, summaryMode: process.env.COMPACT_SUMMARY_MODE || "safe",
     compactions, lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,

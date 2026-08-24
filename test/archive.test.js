@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { archiveToolResultOk, growSavedMemory } from "../archive.js";
+import { archiveToolResultOk, growSavedMemory, holdSavedMemory } from "../archive.js";
+
+test("hold 只有真实新建或合并回执才算短札落盘", () => {
+  assert.equal(holdSavedMemory("新建→b_abc 情感,关系"), true);
+  assert.equal(holdSavedMemory("合并→b_old 情感"), true);
+  assert.equal(holdSavedMemory('{"result":"新建→b_json 情感"}'), true);
+  assert.equal(holdSavedMemory("内容为空，无法存储。"), false);
+  assert.equal(holdSavedMemory("计划新建→但尚未保存"), false);
+});
 
 test("grow 预拆分结果至少落盘一条才算归档成功", () => {
   assert.equal(growSavedMemory('{"result":"5条(预拆分·逐字)|新5合0 batch:g_43808b81a13f\\n📝一\\n📝二"}'), true);
@@ -14,6 +22,7 @@ test("grow 短内容成功路径可识别", () => {
 });
 
 test("工具报错不能因正文像成功结果而误判", () => {
+  assert.equal(archiveToolResultOk("hold", "新建→b_abc 情感", true), false);
   assert.equal(archiveToolResultOk("grow", "2条|新2合0 batch:g_abc", true), false);
   assert.equal(archiveToolResultOk("grow", "❌ [OB-E004] MCP 工具执行异常", false), false);
 });

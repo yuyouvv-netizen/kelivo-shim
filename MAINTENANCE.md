@@ -50,6 +50,9 @@
   扩展窗口处理。PreCompact 的 `safe` 摘要保留诚实兜底；压缩完成后的
   `SessionStart(compact)` 自动取回 `breath` 与最近三天的续接信，再把它们作为同一个人的
   记忆续接。不要轻易把 `COMPACT_SUMMARY_MODE` 改成 `slim`。
+- **窗口进度页**(`window-admin.js`):`/admin/window` 只读展示最新真实前缀、167K 压缩线、
+  80%/85% 阶段、Letter 回执与当前进程内的压缩记录。页面沿用 `SHIM_KEY`、限速登录、
+  no-store/CSP 安全头，不发送消息、不调用模型、不改变任何运行状态。
 - **人设保险箱**(`entrypoint.sh`):开机从 `/persona` 恢复缺失的人设与 `.mcp.json`。
 - **语音**(`voice.js`):`[语音]…[/语音]` 段落 → ElevenLabs opus 直出(失败降级
   mp3+ffmpeg,再失败降级文字)。突然不出声九成是 ElevenLabs 月度额度用完。

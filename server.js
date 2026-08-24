@@ -588,6 +588,7 @@ function onStdout(sourceProc, chunk) {
 
 const OB_LABELS = {
   breath: "🫧 呼吸·读记忆", hold: "📝 记下", archive_session: "📦 归档今天",
+  letter_write: "💌 写续接信", letter_read: "💌 读近期信",
   dream: "💭 做梦", pulse: "💓 感知", trace: "🔍 追溯", grow: "🌱 生长", todos: "✅ 待办",
 };
 
@@ -596,8 +597,8 @@ const OB_TRACE = process.env.OB_TRACE !== "0";
 const OB_TRACE_ARG_MAX = +(process.env.OB_TRACE_ARG_MAX || 300);
 const OB_TRACE_RES_MAX = +(process.env.OB_TRACE_RES_MAX || 400);
 const obToolNames = new Map(); // tool_use_id -> 短名(跨事件对齐返回)
-// tool_use_id -> 工具短名。续接短札主路径用 hold；grow/archive_session 仅兼容
-// 更新前仍在途的调用或曾暴露旧接口的自建部署。
+// tool_use_id -> 工具短名。续接短札主路径用 letter_write；hold/grow/archive_session
+// 仅兼容更新前仍在途的调用或曾暴露旧接口的自建部署。
 const archiveCalls = new Map();
 const trunc = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 
@@ -648,7 +649,7 @@ function handleEvent(ev, sourceProc = proc) {
       if (cb.type === "tool_use" && typeof cb.name === "string" && cb.name.startsWith("mcp__ombre__")) {
         const short = cb.name.replace("mcp__ombre__", "");
         // 安全阀:记下归档写工具的调用 id,等真实返回确认至少落盘一条。
-        if ((short === "hold" || short === "grow" || short === "archive_session") && cb.id) {
+        if ((short === "letter_write" || short === "hold" || short === "grow" || short === "archive_session") && cb.id) {
           archiveCalls.set(cb.id, short);
         }
         const label = OB_LABELS[short] || short;
@@ -701,8 +702,8 @@ function handleEvent(ev, sourceProc = proc) {
       });
     }
   }
-  // 安全阀:hold 只有返回 `新建→…` 或 `合并→…` 才算真正落盘。
-  // 同时兼容更新前在途的 grow 与旧 archive_session。与 OB_TRACE 无关。
+  // 安全阀:letter_write 只有返回 `💌letter→… […]` 才算真正落盘。
+  // 同时兼容更新前在途的 hold/grow 与旧 archive_session。与 OB_TRACE 无关。
   if (ev.type === "user" && archiveCalls.size) {
     const cont = ev.message?.content;
     if (Array.isArray(cont)) for (const b of cont) {

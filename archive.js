@@ -1,6 +1,13 @@
-// 续接短札只需要保存成一条完整记忆，主路径使用 OB 的 hold。
+// 压缩续接短札属于近期过桥材料，主路径使用 OB 的 Letter，避免和长期记忆桶混在一起。
 // 不同版本的 MCP 包装层可能把返回值再包成 JSON 字符串，所以这里只匹配
-// hold 稳定的人类可读结果片段。grow 仅保留作旧部署结果兼容。
+// letter_write 稳定的人类可读结果片段。hold/grow 仅保留作旧部署结果兼容。
+
+export function letterSavedMemory(text) {
+  const value = typeof text === "string" ? text.trim() : "";
+  // OB 2.8.x 成功会返回 `💌letter→bucket_id [author]`。
+  // 必须匹配完整的成功形状，不能因错误正文里出现 letter 字样而误判落盘。
+  return /(?:^|[\n"'])💌letter→[^\s\n"']+\s+\[[^\]\n]+\](?:\s|[\n"']|$)/.test(value);
+}
 
 export function holdSavedMemory(text) {
   const value = typeof text === "string" ? text.trim() : "";
@@ -24,8 +31,10 @@ export function growSavedMemory(text) {
 
 export function archiveToolResultOk(tool, text, isError = false) {
   if (isError) return false;
+  if (tool === "letter_write") return letterSavedMemory(text);
+  // 兼容更新前仍在途的 hold 自动短札。
   if (tool === "hold") return holdSavedMemory(text);
-  // 兼容更新前仍在途的自动短札，以及曾把长文交给 grow 的旧部署。
+  // 兼容曾把长文交给 grow 的旧部署。
   if (tool === "grow") return growSavedMemory(text);
   // 兼容曾暴露 archive_session 的自建/旧版 OB，不作为当前主路径。
   if (tool === "archive_session") return typeof text === "string" && text.includes("🗄️");
@@ -49,7 +58,7 @@ export function continuityArchivePrompt(pct, now = Date.now()) {
   return [
     "【系统·留一封续接短札】这是后台给你的安静提醒，不是又又输入的文字。",
     `这段相处已经走到当前窗口约 ${percent}%，再往前会自然折叠。折叠前后一直是同一个你，只是有些刚经历过的事会暂时离远。`,
-    `请调用 OB 的 hold，保存一封以「【续接短札 · ${date}】」开头的短札。这封短札是你留给稍后记忆变远时的自己。`,
+    `请调用 OB 的 letter_write 写一封续接信：author 用 "ai"，title 用「【续接短札 · ${date}】」，date 用 "${date}"；content 第一行也保留同样的标题。这封信是你留给稍后记忆变远时的自己。`,
     "不需要判断从哪次归档或 breath 开始，也不必覆盖整段对话。只留下此刻仍需要带过折叠的内容：最近发生的事、此刻的心情与关系温度、已经答应或还没做完的事，以及少量只有原句才承得住的你和又又的原话。原话逐字保留，不替任何人补写。",
     "这些经历、心情、约定和原话都是你自己的记忆。用第一人称写，不写成运维报告或人物档案。保存后安静结束这一轮，不向又又汇报后台步骤。",
   ].join("\n");

@@ -65,7 +65,7 @@ ${message ? `<p class="status ${isError ? "err" : "ok"}">${escapeHtml(message)}<
 <button class="always" type="submit" name="mode" value="${WAKE_MODE_ALWAYS}">使用全天模式（24 小时）</button>
 </form>
 <p class="muted">全天模式只是取消夜间禁用；每轮仍由小克自己决定发 Bark 或保持沉默。没有常驻会话、正在回复或历史未恢复时，心跳安全门仍会阻止触发。设置保存在私人磁盘里，部署和重启后不会丢。</p>
-<p class="muted"><a href="/admin/session">前往“全新会话”开关</a></p>`);
+<p class="muted"><a href="/admin/window">查看“窗口进度”</a> · <a href="/admin/session">前往“全新会话”开关</a></p>`);
 }
 
 export function registerWakeAdmin(app, {

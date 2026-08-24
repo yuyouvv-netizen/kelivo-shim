@@ -58,7 +58,8 @@ ${message ? `<p class="status ${isError ? "err" : "ok"}">${escapeHtml(message)}<
 <form method="post" action="${BASE_PATH}/fresh">
 <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
 <button type="submit">确认放下当前会话，开启全新 4.6</button>
-</form>`);
+</form>
+<p class="muted"><a href="/admin/window">查看“窗口进度”</a> · <a href="/admin/wake">前往“心跳开关”</a></p>`);
 }
 
 export function registerSessionAdmin(app, {

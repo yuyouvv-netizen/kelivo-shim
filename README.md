@@ -13,6 +13,7 @@
 - 卡住或进程中断后绝不自动重发用户消息;本轮可放弃,由用户决定是否重新询问
 - 自主唤醒默认只在新加坡时间 08:00-24:00、空闲约 50-60 分钟后复用已恢复历史的常驻进程;手机 `/admin/wake` 可热切换全天模式,部署或进程重启后仍保留选择并等待安全的常驻会话
 - 手机打开 `/admin/session` 并用 `SHIM_KEY` 登录,可不经归档主动放下碎片化原生会话;后端保持空白直到新 4.6 对话的第一条真实消息
+- 手机打开 `/admin/window` 可只读查看当前 K 数、压缩百分比、80%/85% 阈值、续接信与最近压缩状态;页面不会触发任何 Claude 轮次
 - 手机打开 `/admin/import` 可把 Claude 官端分享记录封成一次性搬家包裹;待迁移时封住心跳和旧窗口,只让空白 Kelivo 对话的第一条真实消息接入
 - 全云端,电脑不用开;走订阅,零 API 计费
 
@@ -47,6 +48,7 @@
 | `import-history.js` | Claude 官端历史的一次性私有持久化、旧会话指针备份/恢复与原子消费 |
 | `import-history-admin.js` | 手机 `/admin/import` 搬家门,使用 `SHIM_KEY`、CSRF、安全 Cookie 和本地 JSON 文件读取 |
 | `window.js` | Claude Code 窗口用量计算与压缩阈值 |
+| `window-admin.js` | 手机 `/admin/window` 只读窗口进度页,与其他管理页共用 `SHIM_KEY` 安全边界 |
 | `compact-settings.js` | PreCompact 摘要与 SessionStart 压缩后记忆恢复钩子 |
 | `compact-instructions.js` | 不含工具清单的自然摘要兜底 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |

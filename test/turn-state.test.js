@@ -15,6 +15,10 @@ test("request fingerprint binds the exact conversation, system and model", () =>
   const base = { messages: [{ role: "user", content: "你好" }], system: "world", model: "opus" };
   assert.equal(requestFingerprint(base), requestFingerprint(base));
   assert.notEqual(requestFingerprint(base), requestFingerprint({ ...base, model: "sonnet" }));
+  assert.notEqual(
+    requestFingerprint({ ...base, effort: "low" }),
+    requestFingerprint({ ...base, effort: "high" }),
+  );
   assert.notEqual(requestFingerprint(base), requestFingerprint({
     ...base, messages: [{ role: "user", content: "另一句" }],
   }));

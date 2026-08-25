@@ -51,6 +51,38 @@ test("window progress helpers report K values and bounded stages", () => {
   assert.doesNotMatch(html, /width:180%/);
 });
 
+test("window page shows a passive model and thinking receipt", () => {
+  const html = windowPage({
+    model: "claude-opus-4-6",
+    effort: "high",
+    claudeCodeVersion: "2.1.206",
+    tokens: 10,
+    limit: 167000,
+    attestation: {
+      requestedModel: "claude-opus-4-6",
+      configuredModel: "claude-opus-4-6",
+      upstreamModel: "claude-opus-4-6",
+      requestedEffort: "high",
+      effectiveEffort: "high",
+      effortSource: "kelivo-output-config",
+      thinkingDisplay: "summarized",
+      thinkingSeen: true,
+      signatureSeen: true,
+      localTraceEnabled: true,
+      status: "completed",
+      completedAt: "2026-08-25T09:30:00.000Z",
+    },
+  });
+  assert.match(html, /模型与思考验真/);
+  assert.match(html, /上游实际模型/);
+  assert.match(html, /一致 ✓/);
+  assert.match(html, /重度（high）/);
+  assert.match(html, /上游签名标记/);
+  assert.match(html, /已收到 ✓/);
+  assert.match(html, /2\.1\.206/);
+  assert.match(html, /本地 OB 工具轨迹/);
+});
+
 test("window progress page requires SHIM_KEY and performs no write action", async (t) => {
   let express;
   try {

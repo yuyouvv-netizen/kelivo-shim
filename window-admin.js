@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "crypto";
+import { effortLabel } from "./reasoning.js";
 
 const BASE_PATH = "/admin/window";
 const SESSION_TTL_MS = 30 * 60 * 1000;
@@ -61,6 +62,55 @@ function singaporeTime(value) {
   }).format(date);
 }
 
+function effortText(value) {
+  if (!value) return "未携带";
+  return `${effortLabel(value)}（${escapeHtml(value)}）`;
+}
+
+function attestationPanel(status = {}) {
+  const receipt = status.attestation;
+  if (!receipt) return `<details class="verify" open><summary>模型与思考验真</summary>
+<p class="status quiet">还没有验真小票。正常聊一轮后，后台会自动记录；不用给小克发送检查指令。</p></details>`;
+
+  const requestedModel = receipt.requestedModel || receipt.configuredModel || "未携带";
+  const upstreamModel = receipt.upstreamModel || "等待上游回传";
+  const hasUpstreamModel = !!receipt.upstreamModel;
+  const modelMatches = hasUpstreamModel && receipt.upstreamModel === receipt.configuredModel;
+  const modelState = !hasUpstreamModel ? "等待中"
+    : modelMatches ? "一致 ✓" : "不一致 ⚠️";
+  const signatureState = receipt.signatureSeen ? "已收到 ✓"
+    : receipt.status === "waiting" || receipt.status === "streaming" ? "等待中"
+      : receipt.thinkingSeen ? "未收到 ⚠️" : "本轮未出现思考摘要";
+  const thinkingState = receipt.thinkingSeen ? "Anthropic 摘要 ✓" : "本轮未出现";
+  const source = ({
+    "kelivo-output-config": "Kelivo 档位",
+    "kelivo-thinking-budget": "Kelivo 旧版预算",
+    "kelivo-auto": "Kelivo 自动",
+    "kelivo-disabled-cli-minimum": "Kelivo 关闭（CLI 最低档）",
+    "server-default": "后台默认",
+  })[receipt.effortSource] || "后台默认";
+  const tone = hasUpstreamModel && !modelMatches ? "warm"
+    : receipt.signatureSeen ? "fresh" : "quiet";
+  const headline = hasUpstreamModel && !modelMatches
+    ? "上游模型与请求不一致，请先不要靠前端标签判断。"
+    : receipt.signatureSeen
+      ? "这一轮已收到上游模型信息和思考签名标记。"
+      : "模型信息已自动记录；思考签名状态见下方。";
+
+  return `<details class="verify" open><summary>模型与思考验真</summary>
+<p class="status ${tone}">${escapeHtml(headline)}</p>
+<div class="grid verify-grid">
+  <div class="tile">Kelivo 请求模型<strong>${escapeHtml(requestedModel)}</strong></div>
+  <div class="tile">上游实际模型<strong>${escapeHtml(upstreamModel)}</strong><small>${escapeHtml(modelState)}</small></div>
+  <div class="tile">前端推理档位<strong>${effortText(receipt.requestedEffort)}</strong><small>${escapeHtml(source)}</small></div>
+  <div class="tile">底层实际 effort<strong>${effortText(receipt.effectiveEffort)}</strong></div>
+  <div class="tile">思考类型<strong>${escapeHtml(thinkingState)}</strong><small>显示模式：${escapeHtml(receipt.thinkingDisplay || "summarized")}</small></div>
+  <div class="tile">上游签名标记<strong>${escapeHtml(signatureState)}</strong></div>
+</div>
+<p class="muted">Claude Code：${escapeHtml(status.claudeCodeVersion || "unknown")} · 本轮完成（新加坡时间）：${escapeHtml(singaporeTime(receipt.completedAt || receipt.startedAt))}${receipt.localTraceEnabled ? " · 思考显示区另含本地 OB 工具轨迹" : ""}</p>
+</details>`;
+}
+
 function page(title, body, refreshSeconds = 0) {
   const refresh = refreshSeconds > 0
     ? `<meta http-equiv="refresh" content="${Math.round(refreshSeconds)}">`
@@ -74,7 +124,7 @@ body{margin:0;background:#f4f2ed;color:#1d1d1f}main{max-width:680px;margin:0 aut
 h1{font-size:28px;margin:0 0 12px}.big{font-size:38px;font-weight:760;letter-spacing:-1px;margin:18px 0 4px}
 p{line-height:1.65}.muted{color:#6e6e73;font-size:14px}.status{padding:12px 14px;border-radius:12px;background:#f0f0f3}
 .bar{height:18px;border-radius:99px;overflow:hidden;background:#e4e4e8;margin:14px 0 6px}.fill{height:100%;border-radius:99px;transition:width .2s}.fresh{background:#4a78a8}.watch{background:#d19a2a}.warm{background:#c65e2e}.ready{background:#6c5aa7}.quiet{background:#8e8e93}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}.tile{padding:12px;border-radius:14px;background:#f5f5f7}.tile strong{display:block;margin-top:3px;font-size:17px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}.tile{padding:12px;border-radius:14px;background:#f5f5f7}.tile strong{display:block;margin-top:3px;font-size:17px;overflow-wrap:anywhere}.tile small{display:block;color:#6e6e73;margin-top:5px}.verify{margin:24px 0 8px;border-top:1px solid #ddd;padding-top:18px}.verify summary{cursor:pointer;font-size:19px;font-weight:700}.verify-grid{margin-bottom:10px}
 label{display:block;font-weight:650;margin:20px 0 8px}input{box-sizing:border-box;width:100%;font-size:16px;padding:14px;border:1px solid #c7c7cc;border-radius:12px;background:#fff;color:#111}
 button,.refresh{display:block;box-sizing:border-box;width:100%;margin-top:16px;padding:14px;border:0;border-radius:12px;background:#4169a1;color:#fff;font-size:17px;font-weight:650;text-align:center;text-decoration:none}
 .links{text-align:center;margin-top:20px}.links a{color:#4169a1;margin:0 8px}
@@ -108,7 +158,7 @@ export function windowPage(status = {}) {
       : pct >= archivePct ? "等待确认或重试" : "尚未到线";
   const compactCount = Math.max(0, Math.trunc(finiteNumber(status.compactions)));
   return page("对话窗口进度", `<h1>对话窗口进度</h1>
-<p class="muted">当前模型：${escapeHtml(status.model || "尚未启动")}${status.busy ? " · 正在回复" : ""}</p>
+<p class="muted">当前模型：${escapeHtml(status.model || "尚未启动")} · 实际 effort：${escapeHtml(status.effort || "尚未启动")}${status.busy ? " · 正在回复" : ""}</p>
 <div class="big">${pct}%</div><p class="muted">${tokenK(tokens)} / ${tokenK(limit)}</p>
 <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div class="fill ${stage.tone}" style="width:${pct}%"></div></div>
 <p class="status">${escapeHtml(stage.text)}</p>
@@ -118,6 +168,7 @@ export function windowPage(status = {}) {
   <div class="tile">80% 提醒线<strong>${tokenK(limit * warnPct / 100)}</strong></div>
   <div class="tile">85% 写信线<strong>${tokenK(limit * archivePct / 100)}</strong></div>
 </div>
+${attestationPanel(status)}
 <p>当前进程内已压缩：<strong>${compactCount} 次</strong><br>上次压缩（新加坡时间）：<strong>${escapeHtml(singaporeTime(status.lastCompactAt))}</strong>${status.lastCompactPreTokens ? `<br>上次压缩前：<strong>${tokenK(status.lastCompactPreTokens)}</strong>` : ""}</p>
 <a class="refresh" href="${BASE_PATH}">立即刷新</a>
 <p class="muted">页面每 15 秒自动刷新。它只读取 shim 最近一次收到的真实用量，不会给小克发送消息、触发心跳、写 Letter、重启或压缩。</p>

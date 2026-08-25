@@ -10,8 +10,11 @@ const flag = (name) => {
 const sessionId = flag("--session-id") || flag("--resume") || "11111111-1111-4111-8111-111111111111";
 const countFile = process.env.FAKE_CLAUDE_COUNT_FILE;
 const inputFile = process.env.FAKE_CLAUDE_INPUT_FILE;
+const argsFile = process.env.FAKE_CLAUDE_ARGS_FILE;
+const model = flag("--model") || "claude-opus-4-6";
 const send = (value) => process.stdout.write(JSON.stringify({ ...value, session_id: sessionId }) + "\n");
 
+if (argsFile) fs.appendFileSync(argsFile, JSON.stringify(args) + "\n");
 send({ type: "system", subtype: "init" });
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
@@ -27,17 +30,37 @@ input.on("line", (line) => {
   setTimeout(() => {
     send({
       type: "stream_event",
-      event: { type: "message_start", message: { usage: { input_tokens: 10, cache_read_input_tokens: 0 } } },
+      event: {
+        type: "message_start",
+        message: { model, usage: { input_tokens: 10, cache_read_input_tokens: 0 } },
+      },
+    });
+    let textIndex = 0;
+    if (process.env.FAKE_CLAUDE_THINKING === "1") {
+      send({
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+      });
+      send({
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "我在核对。" } },
+      });
+      send({
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signed-upstream-thinking" } },
+      });
+      send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+      textIndex = 1;
+    }
+    send({
+      type: "stream_event",
+      event: { type: "content_block_start", index: textIndex, content_block: { type: "text", text: "" } },
     });
     send({
       type: "stream_event",
-      event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: "原来那封联网回复" } },
     });
-    send({
-      type: "stream_event",
-      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "原来那封联网回复" } },
-    });
-    send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    send({ type: "stream_event", event: { type: "content_block_stop", index: textIndex } });
     send({ type: "result", subtype: "success", usage: { output_tokens: 8 } });
   }, 150);
 });

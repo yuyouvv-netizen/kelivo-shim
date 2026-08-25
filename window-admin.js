@@ -139,10 +139,33 @@ ${message ? `<p class="status warm">${escapeHtml(message)}</p>` : ""}
 <form method="post" action="${BASE_PATH}/login" autocomplete="off">
 <label for="key">SHIM_KEY</label><input id="key" name="key" type="password" required autocomplete="off">
 <button type="submit">查看窗口进度</button></form>
-<p class="muted">这是只读页面。密钥只提交到你自己的 Zeabur 服务，不会写入 GitHub 或页面日志。</p>`);
+<p class="muted">进度与验真部分只读；Bark 名字只会保存到你自己的私人磁盘。密钥不会写入 GitHub 或页面日志。</p>`);
 }
 
-export function windowPage(status = {}) {
+function barkNamePanel(status = {}, session = null, editing = false, message = "", isError = false) {
+  const name = status.aiName || "TA";
+  const availability = status.barkEnabled === false ? "目前没有配置 Bark；名字会先保存，接入后自动使用。" : "下一条 Bark 推送会立即使用这个名字。";
+  if (!editing || !session) return `<details class="verify"><summary>Bark 通知名字</summary>
+${message ? `<p class="status ${isError ? "warm" : "fresh"}">${escapeHtml(message)}</p>` : ""}
+<p class="status quiet">现在显示：<strong>${escapeHtml(name)}</strong></p>
+<p class="muted">${escapeHtml(availability)}只改变通知标题和 Kelivo 模型显示名，不会重启会话或占用聊天上下文。</p>
+<a class="refresh secondary" href="${BASE_PATH}?editName=1">修改名字</a>
+</details>`;
+
+  return `<details class="verify" open><summary>Bark 通知名字</summary>
+${message ? `<p class="status ${isError ? "warm" : "fresh"}">${escapeHtml(message)}</p>` : ""}
+<form method="post" action="${BASE_PATH}/name" autocomplete="off">
+<input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
+<label for="aiName">通知上显示的名字</label>
+<input id="aiName" name="name" value="${escapeHtml(name)}" maxlength="32" required autocomplete="off">
+<button type="submit">保存名字</button>
+</form>
+<a class="refresh secondary" href="${BASE_PATH}">取消</a>
+<p class="muted">最多 32 个字。保存后立刻生效，并保存在私人磁盘里；不需要重新部署。</p>
+</details>`;
+}
+
+export function windowPage(status = {}, { session = null, editName = false, message = "", isError = false } = {}) {
   const tokens = Math.max(0, finiteNumber(status.tokens));
   const limit = Math.max(0, finiteNumber(status.limit));
   const pct = limit > 0
@@ -169,20 +192,23 @@ export function windowPage(status = {}) {
   <div class="tile">85% 写信线<strong>${tokenK(limit * archivePct / 100)}</strong></div>
 </div>
 ${attestationPanel(status)}
+${barkNamePanel(status, session, editName, message, isError)}
 <p>当前进程内已压缩：<strong>${compactCount} 次</strong><br>上次压缩（新加坡时间）：<strong>${escapeHtml(singaporeTime(status.lastCompactAt))}</strong>${status.lastCompactPreTokens ? `<br>上次压缩前：<strong>${tokenK(status.lastCompactPreTokens)}</strong>` : ""}</p>
 <a class="refresh" href="${BASE_PATH}">立即刷新</a>
-<p class="muted">页面每 15 秒自动刷新。它只读取 shim 最近一次收到的真实用量，不会给小克发送消息、触发心跳、写 Letter、重启或压缩。</p>
-<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/session">全新会话</a></p>`, 15);
+<p class="muted">${editName ? "修改名字时已暂停自动刷新。" : "页面每 15 秒自动刷新。"}进度读取不会给小克发送消息、触发心跳、写 Letter、重启或压缩。</p>
+<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/session">全新会话</a></p>`, editName ? 0 : 15);
 }
 
 export function registerWindowAdmin(app, {
   shimKey,
   urlencoded,
   getStatus = () => ({}),
+  setAiName,
   log = (...args) => console.log(...args),
 } = {}) {
   if (!shimKey) return { enabled: false, reason: "missing-shim-key" };
   if (typeof urlencoded !== "function") throw new Error("urlencoded middleware is required");
+  if (setAiName !== undefined && typeof setAiName !== "function") throw new Error("setAiName must be a function");
 
   const sessions = new Map();
   let failedLogins = [];
@@ -217,8 +243,14 @@ export function registerWindowAdmin(app, {
   });
 
   app.get(BASE_PATH, (req, res) => {
-    if (!sessionFor(req)) return res.type("html").send(loginPage());
-    res.type("html").send(windowPage(getStatus()));
+    const session = sessionFor(req);
+    if (!session) return res.type("html").send(loginPage());
+    const editName = req.query?.editName === "1";
+    res.type("html").send(windowPage(getStatus(), {
+      session,
+      editName,
+      message: req.query?.nameSaved === "1" ? "名字已经保存，下一条通知就会换上。" : "",
+    }));
   });
 
   app.post(`${BASE_PATH}/login`, (req, res) => {
@@ -230,9 +262,42 @@ export function registerWindowAdmin(app, {
     }
     failedLogins = [];
     const id = randomBytes(32).toString("base64url");
-    sessions.set(id, { expiresAt: Date.now() + SESSION_TTL_MS });
+    sessions.set(id, { csrf: randomBytes(32).toString("base64url"), expiresAt: Date.now() + SESSION_TTL_MS });
     res.setHeader("Set-Cookie", `kelivo_window_admin=${encodeURIComponent(id)}; Path=${BASE_PATH}; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}`);
     res.redirect(303, BASE_PATH);
+  });
+
+  app.post(`${BASE_PATH}/name`, (req, res) => {
+    const session = sessionFor(req);
+    if (!session) return res.status(401).type("html").send(loginPage("登录已过期，请重新进入。"));
+    if (!safeEqual(req.body?.csrf, session.csrf)) {
+      return res.status(403).type("html").send(windowPage(getStatus(), {
+        session,
+        editName: true,
+        message: "页面校验已失效，请刷新后重试。",
+        isError: true,
+      }));
+    }
+    if (typeof setAiName !== "function") {
+      return res.status(503).type("html").send(windowPage(getStatus(), {
+        session,
+        editName: true,
+        message: "这个部署还没有启用名字设置。",
+        isError: true,
+      }));
+    }
+    const result = setAiName(req.body?.name) || {};
+    if (!result.ok) {
+      return res.status(result.status || 500).type("html").send(windowPage({ ...getStatus(), aiName: req.body?.name }, {
+        session,
+        editName: true,
+        message: result.error || "名字没有保存，请稍后再试。",
+        isError: true,
+      }));
+    }
+    session.csrf = randomBytes(32).toString("base64url");
+    log("[window-admin] AI name changed", result.name || "saved");
+    res.redirect(303, `${BASE_PATH}?nameSaved=1`);
   });
 
   log("[window-admin] mobile window-progress page enabled");

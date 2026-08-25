@@ -29,6 +29,9 @@
   进程崩溃/看门狗硬重启优先 `--resume`;被 CLI 明确拒绝时先重试原件一次,再保留异常
   原件并自动换入 SHA-256 校验通过的副本,以同一 session ID 再试。网络/鉴权失败只退避
   重试原会话,不触发降级。模型或世界书变化才强制新 session。
+- **推理档位透传**(`reasoning.js`):Kelivo Anthropic 请求的 `output_config.effort` 会传给
+  Claude Code `--effort`。只切 effort 时重启进程并 `--resume` 同一个原生 session；
+  `THINK_EFFORT` 只在前端选择自动或未携带档位时作为兜底。
 - **降级恢复**(`history.js`/`procNeedsHistory`):只有原生 session 原件和同 session 副本均
   续接失败时,才在新进程第一条 Kelivo 消息中补送前端实际提供的全部历史(默认不再砍成
   128 条,字符预算仍生效)。常驻进程正常聊天不重复喂。
@@ -50,8 +53,9 @@
   扩展窗口处理。PreCompact 的 `safe` 摘要保留诚实兜底；压缩完成后的
   `SessionStart(compact)` 自动取回 `breath` 与最近三天的续接信，再把它们作为同一个人的
   记忆续接。不要轻易把 `COMPACT_SUMMARY_MODE` 改成 `slim`。
-- **窗口进度页**(`window-admin.js`):`/admin/window` 只读展示最新真实前缀、167K 压缩线、
-  80%/85% 阶段、Letter 回执与当前进程内的压缩记录。页面沿用 `SHIM_KEY`、限速登录、
+- **窗口进度/验真页**(`window-admin.js`):`/admin/window` 除真实窗口用量外，还展示
+  Kelivo 请求模型、上游 `message_start.message.model`、前端档位、实际 `--effort` 与
+  `signature_delta` 是否出现。只存签名长度、不存签名正文。页面沿用 `SHIM_KEY`、限速登录、
   no-store/CSP 安全头，不发送消息、不调用模型、不改变任何运行状态。
 - **人设保险箱**(`entrypoint.sh`):开机从 `/persona` 恢复缺失的人设与 `.mcp.json`。
 - **语音**(`voice.js`):`[语音]…[/语音]` 段落 → ElevenLabs opus 直出(失败降级

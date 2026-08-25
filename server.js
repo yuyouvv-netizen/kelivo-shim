@@ -61,6 +61,7 @@ import {
   normalizeSystemPromptMode,
   systemPromptArgs,
 } from "./system-prompt.js";
+import { normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
 
 // 容器默认 UTC,AI 的「今天」会比新加坡慢 8 小时。统一为新加坡时区,claude 子进程继承。
 process.env.TZ = process.env.TZ || "Asia/Singapore";
@@ -75,13 +76,13 @@ if (!MODELS.includes(MODEL)) MODELS.unshift(MODEL);
 const FRESH_SESSION_MODEL = MODELS.includes(process.env.FRESH_SESSION_MODEL)
   ? process.env.FRESH_SESSION_MODEL
   : MODELS.includes("claude-opus-4-6") ? "claude-opus-4-6" : MODEL;
-const EFFORT = process.env.THINK_EFFORT || "low";
+const EFFORT = normalizeClaudeEffort(process.env.THINK_EFFORT, MODEL, "low");
 // 按模型覆盖思考深度,格式 "model=effort,model=effort";没写的用 EFFORT
 const EFFORT_OVERRIDES = Object.fromEntries(
   (process.env.THINK_EFFORT_OVERRIDES || "claude-fable-5=low")
     .split(",").map((s) => s.split("=").map((x) => x.trim())).filter((p) => p[0] && p[1])
 );
-const effortFor = (model) => EFFORT_OVERRIDES[model] || EFFORT;
+const effortFor = (model) => normalizeClaudeEffort(EFFORT_OVERRIDES[model], model, EFFORT);
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const MCP_CONFIG = process.env.MCP_CONFIG || ".mcp.json";
 const FORWARD_THINKING = process.env.FORWARD_THINKING !== "0";
@@ -103,6 +104,12 @@ const WAKE_MODE_FILE = process.env.WAKE_MODE_FILE || "/persona/wake-mode.json";
 // 默认保留 Claude Code 原生提示,再追加私人提示。若原生工程代理气质过重,
 // Zeabur 临时设 CLAUDE_SYSTEM_PROMPT_MODE=replace 并重新启动即可回退。
 const SYSTEM_PROMPT_MODE = normalizeSystemPromptMode(process.env.CLAUDE_SYSTEM_PROMPT_MODE);
+const CLAUDE_CODE_VERSION = (() => {
+  try {
+    const file = path.join(process.cwd(), "node_modules", "@anthropic-ai", "claude-code", "package.json");
+    return JSON.parse(fs.readFileSync(file, "utf8")).version || "unknown";
+  } catch { return "unknown"; }
+})();
 
 // 默认经 --append-system-prompt 接在 Claude Code 原生提示之后。私人身份与记忆
 // 仍由这里的锚点和 CLAUDE.md 提供,便于实测原生工作框架对判断力的影响。
@@ -227,10 +234,12 @@ function autoArchiveTurn(pct) {
 
 // ---- 常驻 claude 进程 --------------------------------------------------------
 let proc = null, busy = false, spawnedSystem = "", spawnedModel = MODEL;
+let spawnedEffort = effortFor(MODEL);
 let spawnedSystemPromptChars = 0;
 const queue = [];
 let turn = null;
 let lastUsage = null; // 最近一轮的完整 usage(含缓存字段),/debug 查 // 当前在处理的 { sse, resolve, fullText, curThinking, thinkOpen, textOpen, idx, done }
+let lastAttestation = null;
 let skipHistoryOnNextSpawn = false;
 let procNeedsHistory = false;
 let lastRecoveryAt = null;
@@ -325,6 +334,10 @@ function abortStalledTurn(stalled) {
   log("[turn-timeout] aborting stalled turn", { src: stalled.src, idleMs, queued: queue.length });
 
   stalled.done = true;
+  if (stalled.attestation) {
+    stalled.attestation.status = "timeout";
+    stalled.attestation.completedAt = new Date().toISOString();
+  }
   clearInterruptGrace(stalled);
   turnWatchdog.disarm(stalled);
   lastTurnTimeoutAt = Date.now();
@@ -362,11 +375,12 @@ function abortStalledTurn(stalled) {
   pump();
 }
 
-function spawnClaude(kelivoSystem, model) {
+function spawnClaude(kelivoSystem, model, effort) {
   manualFreshPending = false;
   // ?? 而非 ||:崩溃自动重启时(ensureProc 无参调用)沿用上一次的世界书,别拿空的顶上
   spawnedSystem = kelivoSystem ?? spawnedSystem;
   spawnedModel = model || spawnedModel || MODEL;
+  spawnedEffort = normalizeClaudeEffort(effort, spawnedModel, spawnedEffort || effortFor(spawnedModel));
   activeAutoCompactWindow = contextWindowForModel(
     spawnedModel,
     CONFIGURED_AUTO_COMPACT_WINDOW,
@@ -404,7 +418,7 @@ function spawnClaude(kelivoSystem, model) {
     "--verbose",
     "--include-partial-messages",
     "--model", spawnedModel,
-    "--effort", effortFor(spawnedModel),
+    "--effort", spawnedEffort,
     "--thinking-display", "summarized",
     ...systemPromptArgs(SYSTEM_PROMPT_MODE, systemPrompt),
     "--mcp-config", MCP_CONFIG,
@@ -517,6 +531,10 @@ function spawnClaude(kelivoSystem, model) {
       });
     }
     if (turn && !turn.done) {
+      if (turn.attestation) {
+        turn.attestation.status = "process-exit";
+        turn.attestation.completedAt = new Date().toISOString();
+      }
       turnWatchdog.disarm(turn);
       clearInterruptGrace(turn);
       const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
@@ -541,13 +559,15 @@ function spawnClaude(kelivoSystem, model) {
       if (queue.length) pump(); else ensureProc();
     }, restartDelayMs);
   });
-  log("[claude] spawned", spawnedModel, "prompt", SYSTEM_PROMPT_MODE,
+  log("[claude] spawned", spawnedModel, "effort", spawnedEffort, "prompt", SYSTEM_PROMPT_MODE,
     "promptChars", spawnedSystemPromptChars, "worldbookChars", spawnedSystem.length,
     "window", `${activeAutoCompactWindow}/${activeWindowLimit}`,
     resumeId ? "resume" : "fresh", plannedSessionId.slice(0, 8));
   return p;
 }
-function ensureProc(kelivoSystem, model) { if (!proc) proc = spawnClaude(kelivoSystem, model); }
+function ensureProc(kelivoSystem, model, effort) {
+  if (!proc) proc = spawnClaude(kelivoSystem, model, effort);
+}
 
 function startManualFreshSession() {
   if (shuttingDown) return { ok: false, status: 503, error: "服务正在重启，请稍后再试。" };
@@ -568,6 +588,7 @@ function startManualFreshSession() {
   nativeTransientFailures = 0;
   procNeedsHistory = false;
   spawnedModel = FRESH_SESSION_MODEL;
+  spawnedEffort = effortFor(FRESH_SESSION_MODEL);
 
   const old = proc;
   proc = null;
@@ -639,6 +660,11 @@ function handleEvent(ev, sourceProc = proc) {
     if (e.type === "message_start") {
       const prefix = prefixFromMessageStart(e);
       if (prefix > turn.peakPrefix) turn.peakPrefix = prefix;
+      if (turn.attestation) {
+        const upstreamModel = typeof e.message?.model === "string" ? e.message.model.trim() : "";
+        if (upstreamModel) turn.attestation.upstreamModel = upstreamModel;
+        turn.attestation.status = "streaming";
+      }
     }
     if (e.type === "content_block_start") {
       const cb = e.content_block || {};
@@ -669,7 +695,19 @@ function handleEvent(ev, sourceProc = proc) {
         turn.sse?.text(t);
         turnState.updateResponse(turn.fullText);
       }
-      else if (d.type === "thinking_delta") { turn.sse?.thinking(d.thinking || d.text || ""); }
+      else if (d.type === "thinking_delta") {
+        if (turn.attestation) turn.attestation.thinkingSeen = true;
+        turn.sse?.thinking(d.thinking || d.text || "");
+      }
+      else if (d.type === "signature_delta") {
+        if (turn.attestation && typeof d.signature === "string" && d.signature) {
+          turn.attestation.signatureSeen = true;
+          turn.attestation.signatureLength = Math.max(
+            turn.attestation.signatureLength,
+            d.signature.length,
+          );
+        }
+      }
       else if (d.type === "input_json_delta") {
         if (turn.toolInputs[e.index]) turn.toolInputs[e.index].buf += d.partial_json || "";
         if (turn.obBlocks[e.index]) turn.obBlocks[e.index].buf += d.partial_json || "";
@@ -772,6 +810,11 @@ function handleEvent(ev, sourceProc = proc) {
       log("[window] switch requested but no successful archive — keeping window");
     }
     const usage = ev.usage ? { output_tokens: ev.usage.output_tokens } : undefined;
+    if (turn.attestation) {
+      turn.attestation.status = (!ev.subtype || ev.subtype === "success")
+        ? "completed" : ev.subtype;
+      turn.attestation.completedAt = new Date().toISOString();
+    }
     const doKill = wantSwitch && archivedOk && proc;
     const replayable = (!ev.subtype || ev.subtype === "success") && !turn.interruptRequestedAt;
     turn.done = true;
@@ -803,18 +846,27 @@ function pump() {
   const item = queue.shift();
   busy = true;
 
-  // 世界书或模型变了就重启进程再喂(让新设定/新模型生效)
+  // 世界书、模型或前端推理档位变了就重启进程再喂。单独切 effort
+  // 仍恢复同一个原生 session；只有模型/世界书改变才真正开新会话。
   const wantModel = item.model || spawnedModel;
-  if (proc && (item.system !== spawnedSystem || wantModel !== spawnedModel)) {
-    forceFreshSession = true;
-    clearSessionState(SESSION_STATE_FILE);
-    nativeSessionId = null;
-    nativeSessionFingerprint = null;
-    nativeSessionResumed = false;
+  const wantEffort = normalizeClaudeEffort(item.effort, wantModel, spawnedEffort || effortFor(wantModel));
+  const identityChanged = item.system !== spawnedSystem || wantModel !== spawnedModel;
+  const effortChanged = wantEffort !== spawnedEffort;
+  if (proc && (identityChanged || effortChanged)) {
+    if (identityChanged) {
+      forceFreshSession = true;
+      clearSessionState(SESSION_STATE_FILE);
+      nativeSessionId = null;
+      nativeSessionFingerprint = null;
+      nativeSessionResumed = false;
+    } else {
+      snapshotNativeSessionSoon();
+      log("[claude] applying Kelivo effort", spawnedEffort, "->", wantEffort);
+    }
     const old = proc; proc = null;
     try { old.kill(); } catch {}
   }
-  ensureProc(item.system, wantModel);
+  ensureProc(item.system, wantModel, wantEffort);
 
   let text = item.text;
   if (item.recovery && procNeedsHistory) {
@@ -836,6 +888,26 @@ function pump() {
     item, requestKey: item.requestKey || null,
     toolNames: new Map(), toolInputs: {},
   };
+  if (turn.src === "kelivo") {
+    turn.attestation = {
+      requestedModel: item.requestedModel || wantModel,
+      configuredModel: wantModel,
+      upstreamModel: null,
+      requestedEffort: item.requestedEffort ?? null,
+      effectiveEffort: wantEffort,
+      effortSource: item.effortSource || "server-default",
+      thinkingType: item.thinkingType || null,
+      thinkingDisplay: "summarized",
+      thinkingSeen: false,
+      signatureSeen: false,
+      signatureLength: 0,
+      localTraceEnabled: OB_TRACE,
+      status: "waiting",
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    };
+    lastAttestation = turn.attestation;
+  }
   turnState.begin({
     requestKey: turn.requestKey,
     source: turn.src,
@@ -923,6 +995,9 @@ registerWindowAdmin(app, {
   log,
   getStatus: () => ({
     model: spawnedModel,
+    effort: spawnedEffort,
+    claudeCodeVersion: CLAUDE_CODE_VERSION,
+    attestation: lastAttestation ? { ...lastAttestation } : null,
     busy: busy || !!turn || queue.length > 0,
     tokens: Math.max(windowTokens, turn?.peakPrefix || 0),
     limit: activeWindowLimit,
@@ -949,10 +1024,12 @@ registerImportHistoryAdmin(app, {
   log,
 });
 app.get("/health", (_q, r) => r.json({
-  ok: !shuttingDown, model: spawnedModel, models: MODELS, busy, queued: queue.length, shuttingDown,
+  ok: !shuttingDown, model: spawnedModel, effort: spawnedEffort,
+  models: MODELS, busy, queued: queue.length, shuttingDown,
 }));
 app.get("/debug", (_q, r) => r.json({
   cache1h: process.env.ENABLE_PROMPT_CACHING_1H || "unset", lastUsage,
+  attestation: lastAttestation ? { ...lastAttestation, claudeCodeVersion: CLAUDE_CODE_VERSION } : null,
   gmailAuth: gmailAuthDiagnostic,
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
@@ -1603,7 +1680,12 @@ function submitTurn(text, images, sink, opts = {}) {
   log("[turn]", { src: opts.src || "kelivo", len: text.length, imgs: images.length });
   enqueue({
     text, images, system: opts.system ?? spawnedSystem, sse: sink, newWindow,
-    model: opts.model || spawnedModel, recovery: opts.recovery, src: opts.src || "kelivo",
+    model: opts.model || spawnedModel, effort: opts.effort || spawnedEffort,
+    requestedModel: opts.requestedModel || null,
+    requestedEffort: opts.requestedEffort ?? null,
+    effortSource: opts.effortSource || "server-default",
+    thinkingType: opts.thinkingType || null,
+    recovery: opts.recovery, src: opts.src || "kelivo",
     requestKey: opts.requestKey || null,
   });
   return true;
@@ -1660,10 +1742,16 @@ function handleMessages(req, res) {
   const system = systemToText(body.system);
   // Kelivo 选的模型;不在名单里(或没传)就沿用当前模型
   const model = MODELS.includes(body.model) ? body.model : spawnedModel;
+  // Kelivo 的 Claude 路径把“轻度/中度/重度…”放在
+  // output_config.effort；旧版固定预算也兼容。这个值必须一路传到
+  // claude --effort，不能只停留在手机界面。
+  const reasoning = reasoningForRequest(body, model, effortFor(model));
   // Keep the request identity based on the actual Kelivo request. The imported
   // prefix is one-shot, but a phone reconnect must still reattach to or replay
   // the same first turn instead of submitting it a second time.
-  const requestKey = requestFingerprint({ messages: currentMessages, system, model });
+  const requestKey = requestFingerprint({
+    messages: currentMessages, system, model, effort: reasoning.effective,
+  });
   const existing = inflightTurns.get(requestKey);
   if (existing) {
     const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
@@ -1709,7 +1797,18 @@ function handleMessages(req, res) {
   const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
   const delivery = new ReplayableDelivery(sse);
   inflightTurns.set(requestKey, delivery);
-  submitTurn(text, images, delivery, { system, model, src: "kelivo", recovery, requestKey });
+  submitTurn(text, images, delivery, {
+    system,
+    model,
+    effort: reasoning.effective,
+    requestedModel: typeof body.model === "string" ? body.model : model,
+    requestedEffort: reasoning.requested,
+    effortSource: reasoning.source,
+    thinkingType: reasoning.thinkingType,
+    src: "kelivo",
+    recovery,
+    requestKey,
+  });
 }
 
 // Kelivo 的 Claude 类型 Base URL 填 /v1 会拼成 /v1/messages;填根则是 /messages。两个都接。

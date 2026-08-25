@@ -151,7 +151,7 @@ import { randomUUID } from "crypto";
 const PORT = process.env.PORT || 8080;
 const SHIM_KEY = process.env.SHIM_KEY || "";            // Kelivo 要填的 API Key,自己编
 const MODEL = process.env.BRAIN_MODEL || "claude-opus-4-6";
-const EFFORT = process.env.THINK_EFFORT || "low";        // low省额度 / medium思考更长
+const EFFORT = process.env.THINK_EFFORT || "low";        // 前端自动/未携带档位时的兜底
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const MCP_CONFIG = process.env.MCP_CONFIG || ".mcp.json";
 const FORWARD_THINKING = process.env.FORWARD_THINKING !== "0";
@@ -481,7 +481,7 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `ANTHROPIC_AUTH_TOKEN` | `<你的API_KEY>` | 组件①的对内key |
 | `SHIM_KEY` | 自己编个 `sk-xxx` | Kelivo 要填的 |
 | `BRAIN_MODEL` | `claude-opus-4-6` | 或你订阅里能用的模型 |
-| `THINK_EFFORT` | `low` 或 `medium` | 思考深度,low省额度 |
+| `THINK_EFFORT` | `low`/`medium`/`high` | 前端选“自动”或未携带档位时的兜底;当前 shim 会优先透传 Kelivo 档位 |
 | `FORWARD_THINKING` | `1` | 思考链透传 |
 | `ENABLE_PROMPT_CACHING_1H` | `1` | **1小时缓存**,零散聊天省大钱,见 §6 |
 | `PORT` | `8080` | |
@@ -546,7 +546,7 @@ AI 的连续性主要在服务端原生 session 与记忆里,不只依赖 Kelivo
 |---|---|---|
 | `--tools "WebSearch,WebFetch"` 内置工具瘦身 | **基线 51k→22k tokens,砍56%** | 代码里已带(BUILTIN_TOOLS) |
 | `ENABLE_PROMPT_CACHING_1H=1` 1小时缓存 | 零散聊天不再每5分钟重新缓存人设 | env 变量,claude 子进程继承即生效 |
-| `--effort low` | 思考 token 最少档 | env THINK_EFFORT |
+| `--effort <档位>` | Kelivo 明确档位优先;自动/未携带时回落后台默认 | 请求 `output_config.effort` / env `THINK_EFFORT` |
 | 晚安/归档重置 | 清掉滚大的上下文 | 内建 |
 
 验证缓存生效:打一条消息后看 `GET /debug`,`lastUsage.cache_creation.ephemeral_1h_input_tokens > 0` 且
@@ -603,7 +603,7 @@ OAuth 同意屏幕(外部+测试用户加自己)→桌面应用凭据→下载JS
 | Kelivo 选不了模型 | 没实现 /v1/models | 代码已带 |
 | 订阅突然全断 | OAuth 令牌被双端刷新互杀 | 同一令牌只能一处跑;或重新 --claude-login |
 | 部署后行为没变 | 平台滚动部署,旧 pod 还在服务 | 等 1-2 分钟,用新接口特征确认新 pod |
-| 比官方端疏远/解离,人设"读了没内化",先摆事实给方案然后赶人 | claude -p 的内置系统提示把身份钉成"编程 CLI 助手",CLAUDE.md 以"须遵守的项目指令"姿态注入 → 人设被当扮演要求合规执行而非"我自己";且 CC 的训练目标就是"简洁、解决、结束回合" | 代码已带 SOUL_ANCHOR 锚点(追加在系统提示词末尾,措辞可 env 覆盖);人设本体尽量**第一人称**写("我是…"而非"你要扮演…");`THINK_EFFORT` 提到 `medium` 给他思考里"进入自己"的余地也有帮助 |
+| 比官方端疏远/解离,人设"读了没内化",先摆事实给方案然后赶人 | claude -p 的内置系统提示把身份钉成"编程 CLI 助手",CLAUDE.md 以"须遵守的项目指令"姿态注入 → 人设被当扮演要求合规执行而非"我自己";且 CC 的训练目标就是"简洁、解决、结束回合" | 代码已带 SOUL_ANCHOR 锚点(追加在系统提示词末尾,措辞可 env 覆盖);人设本体尽量**第一人称**写("我是…"而非"你要扮演…");在 Kelivo 选择 `medium` 或更高档位，给他思考里“进入自己”的余地也有帮助 |
 
 ---
 

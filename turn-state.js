@@ -34,7 +34,7 @@ function clipped(value, max = MAX_EVENT_TEXT) {
   return text.length > max ? text.slice(0, max) + "…" : text;
 }
 
-export function requestFingerprint({ messages, system, model }) {
+export function requestFingerprint({ messages, system, model, effort }) {
   const normalized = [...(messages || [])];
   // A manual resend can leave two identical user messages at the tail. Treat
   // that as the same transport attempt until an assistant reply intervenes.
@@ -45,7 +45,7 @@ export function requestFingerprint({ messages, system, model }) {
     normalized.pop();
   }
   return createHash("sha256").update(JSON.stringify({
-    model: model || "", system: system || "", messages: normalized,
+    model: model || "", effort: effort || "", system: system || "", messages: normalized,
   })).digest("hex");
 }
 

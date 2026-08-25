@@ -35,6 +35,7 @@ import {
   turnTimeoutMsFromEnv,
 } from "./turn-watchdog.js";
 import { WakeModeStore } from "./wake-mode.js";
+import { AiNameStore } from "./ai-name.js";
 import { createAnthropicSSE, sseHeartbeatMsFromEnv } from "./sse.js";
 import { ReplayableDelivery } from "./delivery.js";
 import { requestFingerprint, TurnStateStore } from "./turn-state.js";
@@ -86,7 +87,8 @@ const effortFor = (model) => normalizeClaudeEffort(EFFORT_OVERRIDES[model], mode
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const MCP_CONFIG = process.env.MCP_CONFIG || ".mcp.json";
 const FORWARD_THINKING = process.env.FORWARD_THINKING !== "0";
-const AI_NAME = process.env.AI_NAME || "TA"; // 你的 AI 的名字(Bark 推送标题、模型显示名)
+const AI_NAME_DEFAULT = process.env.AI_NAME || "TA"; // Bark 标题、模型显示名的初始值
+const AI_NAME_FILE = process.env.AI_NAME_FILE || "/persona/ai-name.json";
 const TURN_TIMEOUT_MS = turnTimeoutMsFromEnv(process.env.TURN_TIMEOUT_MS);
 const TURN_INTERRUPT_GRACE_MS = interruptGraceMsFromEnv(process.env.TURN_INTERRUPT_GRACE_MS);
 const SSE_HEARTBEAT_MS = sseHeartbeatMsFromEnv(process.env.SSE_HEARTBEAT_MS);
@@ -137,6 +139,11 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 const wakeMode = new WakeModeStore({
   file: WAKE_MODE_FILE,
   defaultMode: process.env.WAKE_MODE_DEFAULT,
+  log,
+});
+const aiName = new AiNameStore({
+  file: AI_NAME_FILE,
+  defaultName: AI_NAME_DEFAULT,
   log,
 });
 const turnState = new TurnStateStore({ dir: TURN_STATE_DIR, mailboxTtlMs: MAILBOX_TTL_MS });
@@ -993,7 +1000,10 @@ registerWindowAdmin(app, {
   shimKey: SHIM_KEY,
   urlencoded: express.urlencoded,
   log,
+  setAiName: (name) => aiName.set(name),
   getStatus: () => ({
+    aiName: aiName.get(),
+    barkEnabled: !!BARK_KEY,
     model: spawnedModel,
     effort: spawnedEffort,
     claudeCodeVersion: CLAUDE_CODE_VERSION,
@@ -1111,7 +1121,7 @@ async function barkPush(text) {
   const r = await fetch("https://api.day.app/push", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device_key: BARK_KEY, title: AI_NAME, body: text.slice(0, 1800), group: "ai-partner" }),
+    body: JSON.stringify({ device_key: BARK_KEY, title: aiName.get(), body: text.slice(0, 1800), group: "ai-partner" }),
   });
   log("[bark]", r.status);
 }
@@ -1632,7 +1642,7 @@ function listModels(_req, res) {
   const now = new Date().toISOString();
   const data = MODELS.map((m) => ({
     type: "model", id: m,
-    display_name: `${AI_NAME} (${m.replace(/^claude-/, "")})`,
+    display_name: `${aiName.get()} (${m.replace(/^claude-/, "")})`,
     created_at: now,
   }));
   res.json({ data, has_more: false, first_id: MODELS[0], last_id: MODELS[MODELS.length - 1] });

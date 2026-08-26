@@ -5,6 +5,7 @@
 - 人设放服务端 CLAUDE.md,**不被 cloak 盖掉**,100% 生效
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
 - Kelivo 的思维链强度会透传为 Claude Code `--effort`;切档只重启运行管道并续接原生 session
+- Claude Code 精确锁定在 `2.1.239`，并由 `package-lock.json` + `npm ci` 阻止部署时静默升级
 - 标准 200K 长对话在真实压缩线的 85% 自动写一封 OB Letter 续接信;压缩后自动取回 breath 与最近三天的续接信
 - 异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底
 - Kelivo 自动标题在 shim 本地生成,不会串进常驻 Claude 的私人对话上下文
@@ -12,6 +13,7 @@
 - 单轮长时间无活动先只中止当前轮并宽限一分钟;无效才重启驻留进程并续接原生 session
 - 手机断线不取消后台轮次;同一句在三分钟内重新接入会续收进行中的回复或从短期回信箱取回原文
 - 卡住或进程中断后绝不自动重发用户消息;本轮可放弃,由用户决定是否重新询问
+- `success` 外壳若没有模型、正文和 token 会显示为上游空回；429/OAuth/终止原因进入验真小票，不再留下空白回复
 - 自主唤醒默认只在新加坡时间 06:00-24:00、空闲约 50-60 分钟后复用已恢复历史的常驻进程;手机 `/admin/wake` 可热切换全天模式,部署或进程重启后仍保留选择并等待安全的常驻会话
 - 手机打开 `/admin/session` 并用 `SHIM_KEY` 登录,可不经归档主动放下碎片化原生会话;后端保持空白直到新 4.6 对话的第一条真实消息
 - 手机打开 `/admin/window` 可只读查看当前 K 数、压缩状态和模型/思考验真小票，也可热修改 Bark 通知名字;进度读取与改名都不会触发 Claude 轮次，80% 提醒与 85% 续接信回执按原生会话持久化，部署重启不会重复触发
@@ -56,7 +58,7 @@
 | `compact-instructions.js` | 不含工具清单的自然摘要兜底 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |
 | `entrypoint.sh` | 容器启动脚本(补装 claude 原生二进制等) |
-| `package.json` | 依赖 |
+| `package.json` / `package-lock.json` | 精确锁定的运行依赖；不要把 Claude Code 改回 `^` 或 `latest` |
 | `.mcp.json.example` | MCP 工具清单模板,复制成 `.mcp.json` 填你的 |
 | `CLAUDE.md.example` | 人设入口模板,复制成 `CLAUDE.md`,人设本体自己写 |
 

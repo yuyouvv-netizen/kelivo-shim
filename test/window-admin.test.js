@@ -107,6 +107,33 @@ test("window page shows a passive model and thinking receipt", () => {
   assert.match(html, /本地 OB 工具轨迹/);
 });
 
+test("window page exposes a zero-token upstream failure instead of calling it completed", () => {
+  const html = windowPage({
+    model: "claude-opus-4-6",
+    effort: "max",
+    claudeCodeVersion: "2.1.239",
+    tokens: 0,
+    limit: 167000,
+    attestation: {
+      requestedModel: "claude-opus-4-6",
+      configuredModel: "claude-opus-4-6",
+      upstreamModel: null,
+      requestedEffort: "max",
+      effectiveEffort: "max",
+      status: "empty-result",
+      emptyResult: true,
+      isError: false,
+      terminalReason: "completed",
+      errorMessage: "没有进入模型，也没有生成任何 token。",
+    },
+  });
+  assert.match(html, /零 token 空回/);
+  assert.match(html, /没有进入模型/);
+  assert.match(html, /终止诊断/);
+  assert.match(html, /completed/);
+  assert.match(html, /2\.1\.239/);
+});
+
 test("window page shows the Bark name and pauses refresh while editing", () => {
   const overview = windowPage({ aiName: "小克", barkEnabled: true });
   assert.match(overview, /Bark 通知名字/);

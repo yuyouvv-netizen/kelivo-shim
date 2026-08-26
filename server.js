@@ -716,6 +716,90 @@ const obToolNames = new Map(); // tool_use_id -> 短名(跨事件对齐返回)
 const archiveCalls = new Map();
 const trunc = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 
+function touchTurnActivity(activeTurn) {
+  if (!activeTurn) return;
+  activeTurn.lastActivityAt = Date.now();
+  turnWatchdog.touch(activeTurn);
+}
+
+function diagnosticText(value, max = 600) {
+  const text = Array.isArray(value) ? value.join(" · ") : String(value || "");
+  return trunc(text.replace(/\s+/g, " ").trim(), max);
+}
+
+function assistantTextOf(message) {
+  const content = message?.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("")
+    .replace(/‖/g, "\n");
+}
+
+function usageIsZero(usage) {
+  if (!usage || typeof usage !== "object") return true;
+  const keys = [
+    "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+  ];
+  return keys.every((key) => !(Number(usage[key]) > 0));
+}
+
+function appendTurnText(activeTurn, text) {
+  if (!activeTurn || !text) return;
+  activeTurn.fullText += text;
+  try { activeTurn.sse?.text(text); } catch {}
+  turnState.updateResponse(activeTurn.fullText);
+}
+
+function resultFailure(activeTurn, ev) {
+  const subtype = ev.subtype || "success";
+  const hasApiErrorStatus = ev.api_error_status !== null && ev.api_error_status !== undefined &&
+    String(ev.api_error_status).trim() !== "";
+  const apiErrorStatus = hasApiErrorStatus && Number.isFinite(Number(ev.api_error_status))
+    ? Number(ev.api_error_status) : null;
+  const terminalReason = typeof ev.terminal_reason === "string" ? ev.terminal_reason : null;
+  const assistantError = activeTurn.assistantError || null;
+  const explicitError = ev.is_error === true || subtype !== "success" || !!assistantError ||
+    apiErrorStatus !== null || (!!terminalReason && terminalReason !== "completed");
+  const noModelEvidence = !activeTurn.fullText && !activeTurn.assistantTextCandidate &&
+    !activeTurn.attestation?.upstreamModel && !activeTurn.attestation?.thinkingSeen &&
+    !activeTurn.attestation?.signatureSeen && activeTurn.peakPrefix <= 0;
+  const emptyResult = subtype === "success" && !explicitError && noModelEvidence && usageIsZero(ev.usage);
+  const messages = [];
+  if (assistantError) messages.push(assistantError);
+  if (ev.is_error === true && ev.result) messages.push(ev.result);
+  if (Array.isArray(ev.errors)) messages.push(...ev.errors);
+  const errorMessage = diagnosticText(messages) || (emptyResult
+    ? "Claude Code 正常结束了代理循环，但没有进入模型，也没有生成任何 token。"
+    : explicitError ? "Claude Code 上游请求没有正常完成。" : "");
+  return {
+    failed: explicitError || emptyResult,
+    emptyResult,
+    isError: ev.is_error === true,
+    apiErrorStatus,
+    terminalReason,
+    stopReason: typeof ev.stop_reason === "string" ? ev.stop_reason : null,
+    errorMessage: errorMessage || null,
+  };
+}
+
+function failureNotice(receipt) {
+  const rateLimited = receipt.apiErrorStatus === 429 || receipt.rateLimitStatus === "rejected";
+  const authFailed = receipt.apiErrorStatus === 401 || receipt.apiErrorStatus === 403 ||
+    /(not logged in|authentication|unauthori[sz]ed|oauth|invalid token|expired token|login required)/i
+      .test(receipt.assistantError || receipt.errorMessage || "");
+  const title = rateLimited ? "Claude 上游限流"
+    : authFailed ? "Claude 授权失败"
+      : receipt.emptyResult ? "Claude 上游空回" : "Claude 上游错误";
+  const details = [
+    receipt.apiErrorStatus ? `HTTP ${receipt.apiErrorStatus}` : "",
+    receipt.terminalReason ? `终止原因 ${receipt.terminalReason}` : "",
+    receipt.errorMessage || "",
+  ].filter(Boolean).join("；");
+  return `⚠️〔${title}〕${details ? `${details}。` : "这一轮没有取得模型回复。"}原生会话仍保留，请先查看验真页，不要连续重发。`;
+}
+
 function handleEvent(ev, sourceProc = proc) {
   if (validSessionId(ev?.session_id) && sourceProc === proc) {
     const firstConfirmation = !sourceProc.kelivoSessionConfirmed ||
@@ -753,9 +837,8 @@ function handleEvent(ev, sourceProc = proc) {
     return;
   }
   if (!turn) return;
-  turn.lastActivityAt = Date.now();
-  turnWatchdog.touch(turn);
   if (ev.type === "stream_event") {
+    touchTurnActivity(turn);
     const e = ev.event || {}, d = e.delta || {};
     if (e.type === "message_start") {
       const prefix = prefixFromMessageStart(e);
@@ -827,7 +910,41 @@ function handleEvent(ev, sourceProc = proc) {
     }
     return;
   }
+  if (ev.type === "assistant") {
+    touchTurnActivity(turn);
+    if (turn.attestation) {
+      const upstreamModel = typeof ev.message?.model === "string" ? ev.message.model.trim() : "";
+      if (upstreamModel) turn.attestation.upstreamModel = upstreamModel;
+      const assistantError = diagnosticText(ev.message?.error || ev.error);
+      if (assistantError) {
+        turn.assistantError = assistantError;
+        turn.attestation.assistantError = assistantError;
+      }
+    }
+    const candidate = assistantTextOf(ev.message);
+    if (candidate) turn.assistantTextCandidate = candidate;
+    return;
+  }
+  if (ev.type === "rate_limit_event" || ev.type === "rate_limit") {
+    const info = ev.rate_limit_info || ev.rateLimitInfo || {};
+    if (turn.attestation) {
+      turn.attestation.rateLimitStatus = typeof info.status === "string" ? info.status : null;
+      turn.attestation.rateLimitType = typeof info.rate_limit_type === "string"
+        ? info.rate_limit_type : null;
+      turn.attestation.rateLimitResetsAt = info.resets_at !== null && info.resets_at !== undefined &&
+        Number.isFinite(Number(info.resets_at))
+        ? Number(info.resets_at) : null;
+    }
+    turnState.event("rate_limit", {
+      status: info.status || "unknown",
+      type: info.rate_limit_type || null,
+      resetsAt: info.resets_at || null,
+    });
+    // 限流通知不是模型活动，不能用它无限续命看门狗。
+    return;
+  }
   if (ev.type === "user") {
+    touchTurnActivity(turn);
     const cont = ev.message?.content;
     if (Array.isArray(cont)) for (const block of cont) {
       if (block.type !== "tool_result") continue;
@@ -879,7 +996,18 @@ function handleEvent(ev, sourceProc = proc) {
       windowTokens = turn.peakPrefix;
       checkWindowUsage();
     }
-    turnState.event("result", { subtype: ev.subtype || "success" });
+    if (!turn.fullText && turn.assistantTextCandidate) {
+      appendTurnText(turn, turn.assistantTextCandidate);
+    }
+    const failure = resultFailure(turn, ev);
+    if (turn.attestation) Object.assign(turn.attestation, failure);
+    turnState.event("result", {
+      subtype: ev.subtype || "success",
+      isError: failure.isError,
+      apiErrorStatus: failure.apiErrorStatus,
+      terminalReason: failure.terminalReason,
+      emptyResult: failure.emptyResult,
+    });
     if (turn.interruptRequestedAt) {
       clearInterruptGrace(turn);
       const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
@@ -888,9 +1016,16 @@ function handleEvent(ev, sourceProc = proc) {
         turn.fullText += warning;
         turn.sse?.text(warning);
       }
-    } else if (ev.subtype && ev.subtype !== "success") {
-      log("[result-error]", ev.subtype);
-      if (!turn.fullText) turn.sse?.text(`⚠️[shim] ${ev.subtype}`);
+    } else if (failure.failed) {
+      log("[result-error]", {
+        subtype: ev.subtype || "success",
+        isError: failure.isError,
+        apiErrorStatus: failure.apiErrorStatus,
+        terminalReason: failure.terminalReason,
+        emptyResult: failure.emptyResult,
+      });
+      const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
+      if (interactive) appendTurnText(turn, `${turn.fullText ? "\n\n" : ""}${failureNotice(turn.attestation || failure)}`);
     }
     const wantSwitch = turn.newWindow;
     const archivedOk = turn.archiveOk;
@@ -912,15 +1047,19 @@ function handleEvent(ev, sourceProc = proc) {
     }
     const usage = ev.usage ? { output_tokens: ev.usage.output_tokens } : undefined;
     if (turn.attestation) {
-      turn.attestation.status = (!ev.subtype || ev.subtype === "success")
-        ? "completed" : ev.subtype;
+      turn.attestation.status = turn.interruptRequestedAt ? "interrupted"
+        : failure.emptyResult ? "empty-result"
+          : failure.failed ? "upstream-error" : "completed";
       turn.attestation.completedAt = new Date().toISOString();
     }
     const doKill = wantSwitch && archivedOk && proc;
-    const replayable = (!ev.subtype || ev.subtype === "success") && !turn.interruptRequestedAt;
+    const replayable = !failure.failed && (!ev.subtype || ev.subtype === "success") && !turn.interruptRequestedAt;
+    const deliveryStatus = turn.interruptRequestedAt ? "interrupted"
+      : failure.emptyResult ? "empty-result"
+        : failure.failed ? "upstream-error" : "completed";
     turn.done = true;
     turnWatchdog.disarm(turn);
-    finishTurnDelivery(turn, usage, turn.interruptRequestedAt ? "interrupted" : "completed", replayable);
+    finishTurnDelivery(turn, usage, deliveryStatus, replayable);
     snapshotNativeSessionSoon();
     turn = null;
     busy = false;
@@ -997,7 +1136,7 @@ function pump() {
     startedAt: Date.now(), lastActivityAt: Date.now(), done: false, interruptTimer: null,
     watchdogTimeoutMs,
     item, requestKey: item.requestKey || null,
-    toolNames: new Map(), toolInputs: {},
+    toolNames: new Map(), toolInputs: {}, assistantTextCandidate: "", assistantError: null,
   };
   if (turn.src === "kelivo") {
     turn.attestation = {
@@ -1012,6 +1151,16 @@ function pump() {
       thinkingSeen: false,
       signatureSeen: false,
       signatureLength: 0,
+      assistantError: null,
+      isError: false,
+      apiErrorStatus: null,
+      terminalReason: null,
+      stopReason: null,
+      emptyResult: false,
+      errorMessage: null,
+      rateLimitStatus: null,
+      rateLimitType: null,
+      rateLimitResetsAt: null,
       localTraceEnabled: OB_TRACE,
       status: "waiting",
       startedAt: new Date().toISOString(),

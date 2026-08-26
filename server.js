@@ -58,6 +58,10 @@ import {
   windowPct,
 } from "./window.js";
 import {
+  legacyWindowFlags,
+  WindowThresholdStateStore,
+} from "./window-threshold-state.js";
+import {
   buildSystemPrompt,
   normalizeSystemPromptMode,
   systemPromptArgs,
@@ -94,6 +98,8 @@ const TURN_INTERRUPT_GRACE_MS = interruptGraceMsFromEnv(process.env.TURN_INTERRU
 const SSE_HEARTBEAT_MS = sseHeartbeatMsFromEnv(process.env.SSE_HEARTBEAT_MS);
 const SESSION_RESUME = process.env.SESSION_RESUME !== "0";
 const SESSION_STATE_FILE = process.env.SESSION_STATE_FILE || "/persona/claude-state/shim-session.json";
+const WINDOW_THRESHOLD_STATE_FILE = process.env.WINDOW_THRESHOLD_STATE_FILE ||
+  "/persona/claude-state/window-thresholds.json";
 const IMPORT_HISTORY_DIR = process.env.IMPORT_HISTORY_DIR || "/persona/import-history";
 const IMPORT_MAX_MESSAGES = Math.max(2, +(process.env.IMPORT_MAX_MESSAGES || 4000));
 const IMPORT_MAX_CHARS = Math.max(10_000, +(process.env.IMPORT_MAX_CHARS || 2_000_000));
@@ -144,6 +150,10 @@ const wakeMode = new WakeModeStore({
 const aiName = new AiNameStore({
   file: AI_NAME_FILE,
   defaultName: AI_NAME_DEFAULT,
+  log,
+});
+const windowThresholdState = new WindowThresholdStateStore({
+  file: WINDOW_THRESHOLD_STATE_FILE,
   log,
 });
 const turnState = new TurnStateStore({ dir: TURN_STATE_DIR, mailboxTtlMs: MAILBOX_TTL_MS });
@@ -203,6 +213,7 @@ let windowTokens = 0;
 let windowWarned = false;
 let windowAutoArchived = false;
 let windowArchiveQueued = false;
+let windowLegacyStatePending = false;
 let compactions = 0;
 let lastCompactAt = null;
 let lastCompactPre = 0;
@@ -212,11 +223,72 @@ function notifyMemory(text) {
   if (BARK_KEY) return barkPush(text).catch((e) => log("[bark-err]", e.message));
 }
 
+function currentWindowSessionId() {
+  if (validSessionId(nativeSessionId)) return nativeSessionId;
+  return validSessionId(proc?.kelivoSessionId) ? proc.kelivoSessionId : null;
+}
+
+function persistWindowThresholdState(sessionId = currentWindowSessionId()) {
+  if (!sessionId) return false;
+  const ok = windowThresholdState.save(sessionId, {
+    warned: windowWarned,
+    archived: windowAutoArchived,
+  });
+  if (!ok) log("[window-state] WARNING: threshold receipts are memory-only");
+  return ok;
+}
+
+function restoreWindowThresholdState(sessionId, resumed) {
+  const saved = windowThresholdState.forSession(sessionId);
+  windowWarned = saved.warned;
+  windowAutoArchived = saved.archived;
+  windowArchiveQueued = false;
+  windowLegacyStatePending = !!resumed && !saved.tracked;
+  if (!resumed && !saved.tracked) persistWindowThresholdState(sessionId);
+  log("[window-state] restored", {
+    session: sessionId.slice(-8),
+    tracked: saved.tracked,
+    warned: windowWarned,
+    archived: windowAutoArchived,
+    legacyPending: windowLegacyStatePending,
+  });
+}
+
+function resetWindowThresholdState() {
+  windowWarned = false;
+  windowAutoArchived = false;
+  windowArchiveQueued = false;
+  windowLegacyStatePending = false;
+  persistWindowThresholdState();
+}
+
 function checkWindowUsage() {
   if (!(activeWindowLimit > 0)) return;
   const pct = windowPct(windowTokens, activeWindowLimit);
+  // Deployments made before threshold receipts were persisted have no way to
+  // prove which actions already ran. For one resumed legacy session, adopt its
+  // first observed high-water marks instead of replaying a warning and Letter.
+  if (windowLegacyStatePending) {
+    windowLegacyStatePending = false;
+    const adopted = legacyWindowFlags({
+      pct,
+      warnPct: WINDOW_WARN_PCT,
+      archivePct: WINDOW_ARCHIVE_PCT,
+      autoArchive: WINDOW_AUTO_ARCHIVE,
+    });
+    windowWarned = adopted.warned;
+    windowAutoArchived = adopted.archived;
+    persistWindowThresholdState();
+    log("[window-state] adopted legacy resumed window", {
+      pct,
+      warned: windowWarned,
+      archived: windowAutoArchived,
+    });
+    return;
+  }
   if (!windowWarned && pct >= WINDOW_WARN_PCT) {
     windowWarned = true;
+    persistWindowThresholdState();
     log("[window] warning", pct + "%", windowTokens, "/", activeWindowLimit);
     notifyMemory(`⚠️ 对话窗口用到 ${pct}% 了。我会在压缩前自动让他留一封续接信。`);
   }
@@ -352,6 +424,7 @@ function abortStalledTurn(stalled) {
   if (stalled.autoArchive) {
     windowArchiveQueued = false;
     windowAutoArchived = false;
+    persistWindowThresholdState();
   }
 
   const interactive = stalled.src !== "wake" && stalled.src !== "auto-archive";
@@ -450,7 +523,14 @@ function spawnClaude(kelivoSystem, model, effort) {
     delete env.ANTHROPIC_BASE_URL;
   }
   env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(activeAutoCompactWindow);
-  windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
+  windowTokens = 0;
+  if (resumeId) restoreWindowThresholdState(plannedSessionId, true);
+  else {
+    windowWarned = false;
+    windowAutoArchived = false;
+    windowArchiveQueued = false;
+    windowLegacyStatePending = false;
+  }
   compactions = 0; lastCompactAt = null; lastCompactPre = 0;
   procNeedsHistory = !resumeId && !skipHistoryOnNextSpawn;
   skipHistoryOnNextSpawn = false;
@@ -643,6 +723,9 @@ function handleEvent(ev, sourceProc = proc) {
     nativeRecoverySessionId = null;
     nativeRecoveryStage = 0;
     nativeTransientFailures = 0;
+    if (firstConfirmation) {
+      restoreWindowThresholdState(ev.session_id, sourceProc.kelivoSessionResumed);
+    }
     if (firstConfirmation && !saveSessionState(SESSION_STATE_FILE, {
       sessionId: nativeSessionId, fingerprint: nativeSessionFingerprint,
     })) log("[session] WARNING: could not persist native session state");
@@ -654,7 +737,8 @@ function handleEvent(ev, sourceProc = proc) {
     compactions += 1;
     lastCompactAt = Date.now();
     lastCompactPre = ev.compact_metadata?.pre_tokens || windowTokens;
-    windowTokens = 0; windowWarned = false; windowAutoArchived = false; windowArchiveQueued = false;
+    windowTokens = 0;
+    resetWindowThresholdState();
     if (turn) turn.peakPrefix = 0;
     log("[compact] boundary", ev.compact_metadata?.trigger || "?", "pre_tokens", lastCompactPre);
     return;
@@ -805,6 +889,7 @@ function handleEvent(ev, sourceProc = proc) {
     if (wasAutoArchive) {
       windowArchiveQueued = false;
       windowAutoArchived = archivedOk;
+      persistWindowThresholdState();
       if (archivedOk) log("[window] auto-archive confirmed");
       else {
         log("[window] auto-archive failed; will retry on a later turn");
@@ -1051,6 +1136,7 @@ app.get("/debug", (_q, r) => r.json({
     autoArchive: WINDOW_AUTO_ARCHIVE, archivePct: WINDOW_ARCHIVE_PCT,
     archiveTool: "letter_write", memoryWording: "letter-v1",
     archiveQueued: windowArchiveQueued, autoArchived: windowAutoArchived,
+    thresholdStatePersistent: true, legacyStatePending: windowLegacyStatePending,
     compactHook: COMPACT_HOOK, summaryMode: process.env.COMPACT_SUMMARY_MODE || "safe",
     compactions, lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,
     lastCompactPreTokens: lastCompactPre || null,

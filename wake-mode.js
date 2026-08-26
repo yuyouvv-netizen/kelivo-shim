@@ -12,7 +12,7 @@ export function normalizeWakeMode(raw, fallback = WAKE_MODE_DAY) {
 }
 
 export function activeHoursForWakeMode(mode) {
-  return normalizeWakeMode(mode) === WAKE_MODE_ALWAYS ? "00:00-24:00" : "08:00-24:00";
+  return normalizeWakeMode(mode) === WAKE_MODE_ALWAYS ? "00:00-24:00" : "06:00-24:00";
 }
 
 export function wakeModeAllowsNow(mode, nowMs = Date.now()) {

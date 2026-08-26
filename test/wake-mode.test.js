@@ -15,8 +15,9 @@ import {
 
 test("wake mode defaults to the daytime Singapore window", () => {
   assert.equal(normalizeWakeMode(), WAKE_MODE_DAY);
-  assert.equal(activeHoursForWakeMode(WAKE_MODE_DAY), "08:00-24:00");
-  assert.equal(wakeModeAllowsNow(WAKE_MODE_DAY, Date.parse("2026-08-08T00:00:00Z")), true);
+  assert.equal(activeHoursForWakeMode(WAKE_MODE_DAY), "06:00-24:00");
+  assert.equal(wakeModeAllowsNow(WAKE_MODE_DAY, Date.parse("2026-08-07T21:59:59Z")), false);
+  assert.equal(wakeModeAllowsNow(WAKE_MODE_DAY, Date.parse("2026-08-07T22:00:00Z")), true);
   assert.equal(wakeModeAllowsNow(WAKE_MODE_DAY, Date.parse("2026-08-08T16:00:00Z")), false);
 });
 

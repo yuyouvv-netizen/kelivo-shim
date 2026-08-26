@@ -66,7 +66,7 @@ test("wake page shows the current safe daytime mode", async (t) => {
   t.after(admin.close);
   const { html } = await login(admin);
   assert.match(html, /当前模式/);
-  assert.match(html, /白天 08:00–24:00/);
+  assert.match(html, /白天 06:00–24:00/);
   assert.match(html, /全天模式（24 小时）/);
 });
 

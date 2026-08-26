@@ -149,11 +149,11 @@ test("autonomous wake requires a recovered, idle resident process with an empty 
   });
 });
 
-test("autonomous wake runs only from 08:00 through 24:00 Singapore time", () => {
-  assert.equal(isSingaporeWakeWindow(Date.parse("2026-08-08T00:00:00Z")), true); // 08:00
+test("autonomous wake runs only from 06:00 through 24:00 Singapore time", () => {
+  assert.equal(isSingaporeWakeWindow(Date.parse("2026-08-07T21:59:59Z")), false); // 05:59
+  assert.equal(isSingaporeWakeWindow(Date.parse("2026-08-07T22:00:00Z")), true); // 06:00
   assert.equal(isSingaporeWakeWindow(Date.parse("2026-08-08T15:59:59Z")), true); // 23:59
   assert.equal(isSingaporeWakeWindow(Date.parse("2026-08-08T16:00:00Z")), false); // 00:00
-  assert.equal(isSingaporeWakeWindow(Date.parse("2026-08-08T23:59:59Z")), false); // 07:59
   assert.deepEqual(wakeState({ withinWakeWindow: false }), {
     triggered: false, waitingForHistory: false, reason: "quiet-hours",
   });

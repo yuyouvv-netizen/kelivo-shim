@@ -13,6 +13,9 @@
    `/src` 是容器临时盘——换容器就清空,**手工放进 /src 的东西必须同步放进 /persona**。
 3. 部署会重启常驻 claude 进程。现在会从 Kelivo 请求里的最近历史自动恢复,但前端
    可能只发送有限条消息,所以**动部署前仍先安排归档**;恢复层是事故兜底,不是归档替代品。
+4. **Claude Code 固定为 `2.1.239`**：`package.json` 必须写精确版本，Docker 用
+   `package-lock.json` + `npm ci`。不要改回 `^`、`~` 或 `latest`；升级前先单独验证
+   summarized thinking、signature、stream-json 空回和原生 resume。
 
 ## 核心机制速览(详见代码注释)
 
@@ -37,7 +40,8 @@
   128 条,字符预算仍生效)。常驻进程正常聊天不重复喂。
 - **断流/卡死保护**(`sse.js`/`turn-watchdog.js`):SSE 立即 flush headers,静默工具期
   周期发送 comment heartbeat。五分钟无 Claude 事件时先发 stream-json `interrupt`
-  只中止当前轮;宽限期仍无结果才杀进程,随后优先原生续接。
+  只中止当前轮;宽限期仍无结果才杀进程,随后优先原生续接。限流状态等非模型事件不再
+  刷新看门狗期限，避免上游重试无限伪装成模型活动。
 - **回信箱/同轮重连**(`delivery.js`/`turn-state.js`):请求指纹相同且仍在执行时,
   新 SSE 连接附着到原轮并先重放已生成文字;最近完成回复短期写入 `/persona/turn-state`,
   手机断线后重发同一句直接取回原文,不再次调用模型。
@@ -55,8 +59,10 @@
   记忆续接。不要轻易把 `COMPACT_SUMMARY_MODE` 改成 `slim`。
 - **窗口进度/验真页**(`window-admin.js`):`/admin/window` 除真实窗口用量外，还展示
   Kelivo 请求模型、上游 `message_start.message.model`、前端档位、实际 `--effort` 与
-  `signature_delta` 是否出现。只存签名长度、不存签名正文。页面沿用 `SHIM_KEY`、限速登录、
-  no-store/CSP 安全头，不发送消息、不调用模型、不改变任何运行状态。
+  `signature_delta` 是否出现。`result subtype=success` 仍会检查 `is_error`、HTTP 状态、
+  `terminal_reason` 与零 token/零模型证据；失败时给手机明确警告并禁止写入回信箱。
+  只存签名长度、不存签名正文。页面沿用 `SHIM_KEY`、限速登录、no-store/CSP 安全头，
+  不发送消息、不调用模型、不改变任何运行状态。
 - **人设保险箱**(`entrypoint.sh`):开机从 `/persona` 恢复缺失的人设与 `.mcp.json`。
 - **语音**(`voice.js`):`[语音]…[/语音]` 段落 → ElevenLabs opus 直出(失败降级
   mp3+ffmpeg,再失败降级文字)。突然不出声九成是 ElevenLabs 月度额度用完。

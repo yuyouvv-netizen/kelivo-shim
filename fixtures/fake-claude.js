@@ -27,6 +27,39 @@ input.on("line", (line) => {
     setTimeout(() => process.exit(23), 20);
     return;
   }
+  if (process.env.FAKE_CLAUDE_EMPTY_SUCCESS === "1") {
+    setTimeout(() => send({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      terminal_reason: "completed",
+      result: "",
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 0,
+      },
+    }), 20);
+    return;
+  }
+  if (process.env.FAKE_CLAUDE_API_ERROR === "1") {
+    setTimeout(() => send({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 429,
+      terminal_reason: "api_error",
+      result: "rate limit reached",
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 0,
+      },
+    }), 20);
+    return;
+  }
   setTimeout(() => {
     send({
       type: "stream_event",
@@ -61,6 +94,10 @@ input.on("line", (line) => {
       event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: "原来那封联网回复" } },
     });
     send({ type: "stream_event", event: { type: "content_block_stop", index: textIndex } });
-    send({ type: "result", subtype: "success", usage: { output_tokens: 8 } });
+    send({
+      type: "result", subtype: "success", is_error: false,
+      api_error_status: null, terminal_reason: "completed",
+      usage: { output_tokens: 8 },
+    });
   }, 150);
 });

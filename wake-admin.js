@@ -54,14 +54,14 @@ ${message ? `<p class="err">${escapeHtml(message)}</p>` : ""}
 function adminPage(session, status, message = "", isError = false) {
   const details = status || {};
   const always = details.mode === WAKE_MODE_ALWAYS;
-  const label = always ? "全天 24 小时" : "白天 08:00–24:00";
+  const label = always ? "全天 24 小时" : "白天 06:00–24:00";
   return page("自主心跳开关", `<h1>自主心跳开关</h1>
 ${message ? `<p class="status ${isError ? "err" : "ok"}">${escapeHtml(message)}</p>` : ""}
 <p class="status">当前模式：<span class="current">${label}</span><br>检查间隔：约 ${escapeHtml(details.checkMin || 10)} 分钟<br>空闲触发：约 ${escapeHtml(details.idleMin || 50)}–${escapeHtml((details.idleMin || 50) + (details.checkMin || 10))} 分钟</p>
 <p>这里只控制小克<strong>允许在哪些时段自主醒来</strong>，不会更换模型、重启会话或清空上下文。</p>
 <form method="post" action="${BASE_PATH}/mode">
 <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
-<button class="day" type="submit" name="mode" value="${WAKE_MODE_DAY}">使用白天模式（08:00–24:00）</button>
+<button class="day" type="submit" name="mode" value="${WAKE_MODE_DAY}">使用白天模式（06:00–24:00）</button>
 <button class="always" type="submit" name="mode" value="${WAKE_MODE_ALWAYS}">使用全天模式（24 小时）</button>
 </form>
 <p class="muted">全天模式只是取消夜间禁用；每轮仍由小克自己决定发 Bark 或保持沉默。没有常驻会话、正在回复或历史未恢复时，心跳安全门仍会阻止触发。设置保存在私人磁盘里，部署和重启后不会丢。</p>

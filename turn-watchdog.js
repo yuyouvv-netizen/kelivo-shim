@@ -7,7 +7,7 @@ export const MAX_TURN_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEFAULT_INTERRUPT_GRACE_MS = 60 * 1000;
 export const MIN_INTERRUPT_GRACE_MS = 1000;
 export const MAX_INTERRUPT_GRACE_MS = 5 * 60 * 1000;
-export const SINGAPORE_WAKE_START_HOUR = 8;
+export const SINGAPORE_WAKE_START_HOUR = 6;
 export const SINGAPORE_WAKE_END_HOUR = 24;
 
 export function isSingaporeWakeWindow(nowMs = Date.now()) {

@@ -498,6 +498,7 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `SSE_HEARTBEAT_MS` | `15000` | WebSearch/MCP 静默执行时的 SSE 心跳;设 `0` 关闭 |
 | `SESSION_RESUME` | `1` | 异常重启优先续接 Claude Code 原生 session;设 `0` 关闭 |
 | `SESSION_STATE_FILE` | `/persona/claude-state/shim-session.json` | 原生 session 指针;通常无需修改 |
+| `WINDOW_THRESHOLD_STATE_FILE` | `/persona/claude-state/window-thresholds.json` | 80% 提醒与 85% 续接信的按 session 去重状态;通常无需修改 |
 | `REHYDRATE_MAX_MESSAGES` | 不设置 | 原生 session 与校验副本均失败时,默认接收 Kelivo 提供的全部历史;设置数字才人为限条数 |
 | `REHYDRATE_MAX_CHARS` | 不设置 | 默认按 Claude Code 窗口的 60% 取恢复文本,为系统提示、工具和回复留余量 |
 | `TURN_STATE_DIR` | `/persona/turn-state` | 当前轮精确事件记录与断线回信箱 |

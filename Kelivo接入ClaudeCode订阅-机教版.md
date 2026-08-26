@@ -494,6 +494,8 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `TIME_STAMP` | `1`(默认开) | 每条消息开头注入【时间】行:新加坡时间+距上条消息间隔。AI 对时间的自估天天漂,记忆里的时间跟着错,这个直接喂真实时钟。`0` 关闭 |
 | `TIME_GAP_MIN` | `5` | 间隔小于这个分钟数时只给时间不报间隔,免得连发消息时啰嗦 |
 | `TURN_TIMEOUT_MS` | `300000`(默认5分钟无活动) | 单轮超过此时间没有新 Claude 事件时先温和中止当前轮;设 `0` 关闭 |
+| `COMPACT_TURN_TIMEOUT_MS` | `600000`(默认10分钟无活动) | 窗口达到 `COMPACT_WATCHDOG_PCT` 后，为压缩与压缩后记忆恢复留出的单轮静默时间 |
+| `COMPACT_WATCHDOG_PCT` | `95` | 从这个窗口百分比起启用压缩轮较长看门狗 |
 | `TURN_INTERRUPT_GRACE_MS` | `60000` | 温和中止后再等多久;仍无结果才硬重启进程 |
 | `SSE_HEARTBEAT_MS` | `15000` | WebSearch/MCP 静默执行时的 SSE 心跳;设 `0` 关闭 |
 | `SESSION_RESUME` | `1` | 异常重启优先续接 Claude Code 原生 session;设 `0` 关闭 |

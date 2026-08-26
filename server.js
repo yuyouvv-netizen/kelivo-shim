@@ -29,10 +29,13 @@ import { compactSettingsArg } from "./compact-settings.js";
 import { isKelivoTitleRequest, localTitleForRequest } from "./title.js";
 import {
   autonomousWakeStatus,
+  compactTurnTimeoutMsFromEnv,
+  compactWatchdogPctFromEnv,
   interruptControlRequest,
   interruptGraceMsFromEnv,
   TurnWatchdog,
   turnTimeoutMsFromEnv,
+  watchdogTimeoutForTurn,
 } from "./turn-watchdog.js";
 import { WakeModeStore } from "./wake-mode.js";
 import { AiNameStore } from "./ai-name.js";
@@ -94,6 +97,8 @@ const FORWARD_THINKING = process.env.FORWARD_THINKING !== "0";
 const AI_NAME_DEFAULT = process.env.AI_NAME || "TA"; // Bark 标题、模型显示名的初始值
 const AI_NAME_FILE = process.env.AI_NAME_FILE || "/persona/ai-name.json";
 const TURN_TIMEOUT_MS = turnTimeoutMsFromEnv(process.env.TURN_TIMEOUT_MS);
+const COMPACT_TURN_TIMEOUT_MS = compactTurnTimeoutMsFromEnv(process.env.COMPACT_TURN_TIMEOUT_MS);
+const COMPACT_WATCHDOG_PCT = compactWatchdogPctFromEnv(process.env.COMPACT_WATCHDOG_PCT);
 const TURN_INTERRUPT_GRACE_MS = interruptGraceMsFromEnv(process.env.TURN_INTERRUPT_GRACE_MS);
 const SSE_HEARTBEAT_MS = sseHeartbeatMsFromEnv(process.env.SSE_HEARTBEAT_MS);
 const SESSION_RESUME = process.env.SESSION_RESUME !== "0";
@@ -739,7 +744,11 @@ function handleEvent(ev, sourceProc = proc) {
     lastCompactPre = ev.compact_metadata?.pre_tokens || windowTokens;
     windowTokens = 0;
     resetWindowThresholdState();
-    if (turn) turn.peakPrefix = 0;
+    if (turn) {
+      turn.peakPrefix = 0;
+      turn.lastActivityAt = Date.now();
+      turnWatchdog.touch(turn);
+    }
     log("[compact] boundary", ev.compact_metadata?.trigger || "?", "pre_tokens", lastCompactPre);
     return;
   }
@@ -960,6 +969,15 @@ function pump() {
   }
   ensureProc(item.system, wantModel, wantEffort);
 
+  const watchdogTimeoutMs = watchdogTimeoutForTurn({
+    tokens: windowTokens,
+    limit: activeWindowLimit,
+    archiveReceipt: windowAutoArchived,
+    defaultTimeoutMs: TURN_TIMEOUT_MS,
+    compactTimeoutMs: COMPACT_TURN_TIMEOUT_MS,
+    compactPct: COMPACT_WATCHDOG_PCT,
+  });
+
   let text = item.text;
   if (item.recovery && procNeedsHistory) {
     text = withRecoveredHistory(text, item.recovery);
@@ -977,6 +995,7 @@ function pump() {
     sse: item.sse, fullText: "", newWindow: !!item.newWindow, obBlocks: {}, archiveOk: false,
     peakPrefix: 0, autoArchive: !!item.autoArchive, src: item.src || "unknown",
     startedAt: Date.now(), lastActivityAt: Date.now(), done: false, interruptTimer: null,
+    watchdogTimeoutMs,
     item, requestKey: item.requestKey || null,
     toolNames: new Map(), toolInputs: {},
   };
@@ -1007,7 +1026,13 @@ function pump() {
     model: wantModel,
     sessionId: nativeSessionId,
   });
-  turnWatchdog.arm(turn);
+  turnWatchdog.arm(turn, watchdogTimeoutMs);
+  if (watchdogTimeoutMs > TURN_TIMEOUT_MS) {
+    log("[turn-watchdog] compression grace armed", {
+      pct: windowPct(windowTokens, activeWindowLimit),
+      timeoutMs: watchdogTimeoutMs,
+    });
+  }
   const content = item.images && item.images.length
     ? [{ type: "text", text }, ...item.images]
     : text;
@@ -1162,8 +1187,12 @@ app.get("/debug", (_q, r) => r.json({
     inflight: inflightTurns.size,
   },
   watchdog: {
-    enabled: TURN_TIMEOUT_MS > 0,
-    timeoutMs: TURN_TIMEOUT_MS,
+    enabled: (turn?.watchdogTimeoutMs ?? TURN_TIMEOUT_MS) > 0,
+    timeoutMs: turn?.watchdogTimeoutMs ?? TURN_TIMEOUT_MS,
+    defaultTimeoutMs: TURN_TIMEOUT_MS,
+    compactTimeoutMs: COMPACT_TURN_TIMEOUT_MS,
+    compactPct: COMPACT_WATCHDOG_PCT,
+    compactGrace: !!turn && turn.watchdogTimeoutMs > TURN_TIMEOUT_MS,
     interruptGraceMs: TURN_INTERRUPT_GRACE_MS,
     active: !!turn,
     interruptPending: !!turn?.interruptRequestedAt,

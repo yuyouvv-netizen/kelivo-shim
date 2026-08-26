@@ -2,6 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   autonomousWakeStatus,
+  compactTurnTimeoutMsFromEnv,
+  compactWatchdogPctFromEnv,
+  DEFAULT_COMPACT_TURN_TIMEOUT_MS,
+  DEFAULT_COMPACT_WATCHDOG_PCT,
   DEFAULT_INTERRUPT_GRACE_MS,
   DEFAULT_TURN_TIMEOUT_MS,
   interruptControlRequest,
@@ -13,6 +17,7 @@ import {
   MIN_TURN_TIMEOUT_MS,
   TurnWatchdog,
   turnTimeoutMsFromEnv,
+  watchdogTimeoutForTurn,
 } from "../turn-watchdog.js";
 
 const wakeState = (overrides = {}) => autonomousWakeStatus({
@@ -29,18 +34,21 @@ function fakeTimers() {
   let nextId = 1;
   const timers = new Map();
   return {
-    setTimer(fn) {
+    setTimer(fn, delay) {
       const id = nextId++;
-      timers.set(id, fn);
+      timers.set(id, { fn, delay });
       return id;
     },
     clearTimer(id) {
       timers.delete(id);
     },
     fire(id) {
-      const fn = timers.get(id);
+      const fn = timers.get(id)?.fn;
       timers.delete(id);
       fn?.();
+    },
+    delay(id) {
+      return timers.get(id)?.delay;
     },
     ids() {
       return [...timers.keys()];
@@ -54,6 +62,26 @@ test("turn timeout env uses a safe default and bounds", () => {
   assert.equal(turnTimeoutMsFromEnv("0"), 0);
   assert.equal(turnTimeoutMsFromEnv("1"), MIN_TURN_TIMEOUT_MS);
   assert.equal(turnTimeoutMsFromEnv(String(MAX_TURN_TIMEOUT_MS * 2)), MAX_TURN_TIMEOUT_MS);
+});
+
+test("compression-aware timeout defaults to ten minutes at a 95 percent high-water mark", () => {
+  assert.equal(compactTurnTimeoutMsFromEnv(undefined), DEFAULT_COMPACT_TURN_TIMEOUT_MS);
+  assert.equal(compactTurnTimeoutMsFromEnv("bad"), DEFAULT_COMPACT_TURN_TIMEOUT_MS);
+  assert.equal(compactWatchdogPctFromEnv(undefined), DEFAULT_COMPACT_WATCHDOG_PCT);
+  assert.equal(compactWatchdogPctFromEnv("0"), 1);
+  assert.equal(compactWatchdogPctFromEnv("101"), 100);
+
+  const base = {
+    limit: 167000,
+    defaultTimeoutMs: 5 * 60 * 1000,
+    compactTimeoutMs: 10 * 60 * 1000,
+    compactPct: 95,
+  };
+  assert.equal(watchdogTimeoutForTurn({ ...base, tokens: 158000 }), 5 * 60 * 1000);
+  assert.equal(watchdogTimeoutForTurn({ ...base, tokens: 158650 }), 10 * 60 * 1000);
+  assert.equal(watchdogTimeoutForTurn({ ...base, tokens: 0, archiveReceipt: true }), 10 * 60 * 1000);
+  assert.equal(watchdogTimeoutForTurn({ ...base, tokens: 0, archiveReceipt: false }), 5 * 60 * 1000);
+  assert.equal(watchdogTimeoutForTurn({ ...base, tokens: 166000, defaultTimeoutMs: 0 }), 0);
 });
 
 test("interrupt grace defaults to a continuity-first full minute and stays bounded", () => {
@@ -109,6 +137,25 @@ test("activity refreshes the deadline without leaking the stale timer", () => {
   assert.deepEqual(timedOut, []);
   timers.fire(freshTimer);
   assert.deepEqual(timedOut, [turn]);
+});
+
+test("a compression turn keeps its per-turn extended timeout when activity refreshes", () => {
+  const timers = fakeTimers();
+  const turn = { id: 1 };
+  const watchdog = new TurnWatchdog({
+    timeoutMs: 5 * 60 * 1000,
+    onTimeout() {},
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+  });
+
+  watchdog.arm(turn, 10 * 60 * 1000);
+  const [first] = timers.ids();
+  assert.equal(timers.delay(first), 10 * 60 * 1000);
+  watchdog.touch(turn);
+  const [refreshed] = timers.ids();
+  assert.notEqual(refreshed, first);
+  assert.equal(timers.delay(refreshed), 10 * 60 * 1000);
 });
 
 test("a previous turn cannot disarm the current turn", () => {

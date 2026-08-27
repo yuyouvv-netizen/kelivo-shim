@@ -20,6 +20,7 @@ import { registerSessionAdmin } from "./session-admin.js";
 import { registerWakeAdmin } from "./wake-admin.js";
 import { registerWindowAdmin } from "./window-admin.js";
 import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
+import { diagnoseBirdMcp } from "./bird-mcp-diagnostic.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
@@ -172,6 +173,34 @@ diagnoseStoredGmailAuth({ mcpConfigFile: MCP_CONFIG })
     gmailAuthDiagnostic = { status: "error" };
     log("[gmail-auth-diagnostic] unexpected diagnostic failure");
   });
+let birdMcpDiagnostic = {
+  configured: !!process.env.BIRD_MCP_URL,
+  ready: false,
+  status: process.env.BIRD_MCP_URL ? "checking" : "disabled",
+  toolNamespace: "toy",
+  lastCheckedAt: null,
+};
+async function refreshBirdMcpDiagnostic() {
+  const result = await diagnoseBirdMcp({ url: process.env.BIRD_MCP_URL });
+  birdMcpDiagnostic = {
+    ...result,
+    toolNamespace: "toy",
+    lastCheckedAt: new Date().toISOString(),
+  };
+  log(`[bird-mcp-diagnostic] status=${result.status} ready=${result.ready}`);
+}
+refreshBirdMcpDiagnostic().catch(() => {
+  birdMcpDiagnostic = {
+    ...birdMcpDiagnostic,
+    ready: false,
+    status: "diagnostic-error",
+    lastCheckedAt: new Date().toISOString(),
+  };
+});
+if (process.env.BIRD_MCP_URL) {
+  const birdDiagnosticTimer = setInterval(refreshBirdMcpDiagnostic, 5 * 60_000);
+  birdDiagnosticTimer.unref?.();
+}
 
 // ---- 长对话记忆保全 ----------------------------------------------------------
 // 普通订阅模型固定按标准 200K 算；只有模型名显式带 [1m] 才启用 1M。
@@ -1300,7 +1329,7 @@ app.get("/debug", (_q, r) => r.json({
   cache1h: process.env.ENABLE_PROMPT_CACHING_1H || "unset", lastUsage,
   attestation: lastAttestation ? { ...lastAttestation, claudeCodeVersion: CLAUDE_CODE_VERSION } : null,
   gmailAuth: gmailAuthDiagnostic,
-  bird: { configured: !!process.env.BIRD_MCP_URL, toolNamespace: "toy" },
+  bird: birdMcpDiagnostic,
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
   window: {

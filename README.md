@@ -6,7 +6,7 @@
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
 - Kelivo 的思维链强度会透传为 Claude Code `--effort`;切档只重启运行管道并续接原生 session
 - Claude Code 精确锁定在 `2.1.239`，并由 `package-lock.json` + `npm ci` 阻止部署时静默升级
-- 标准 200K 长对话在真实压缩线的 85% 自动写一封 OB Letter 续接信;压缩后自动取回 breath 与最近三天的续接信
+- 标准 200K 长对话在真实压缩线的 85% 自动写一封 OB Letter 续接信;压缩后自动取回全部钉选桶、按 OB 排名浮现的 8 个普通桶与最近三天的续接信
 - 异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底
 - Kelivo 自动标题在 shim 本地生成,不会串进常驻 Claude 的私人对话上下文
 - WebSearch/MCP 静默执行时持续发 SSE 心跳,避免“Claude 已搜完、Kelivo 却断流”

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  BREATH_REGULAR_RESULTS,
   buildCompactSettings,
   RECENT_LETTER_RESULTS,
   recentLetterDateFrom,
@@ -8,7 +9,7 @@ import {
 import { compactInstructions } from "../compact-prompts.js";
 import { COMPACT_RECOVERY_CONTEXT } from "../compact-recovery-text.js";
 
-test("压缩后由 hook 自动取回 breath 和近期续接短札", () => {
+test("压缩后由 hook 自动取回钉选桶、八个普通桶和近期续接短札", () => {
   const now = Date.parse("2026-08-24T01:00:00+08:00");
   const settings = buildCompactSettings({ dir: "/src", memoryEnabled: true, now });
   const pre = settings.hooks.PreCompact[0].hooks[0];
@@ -19,7 +20,8 @@ test("压缩后由 hook 自动取回 breath 和近期续接短札", () => {
   assert.equal(after.matcher, "compact");
   const breath = after.hooks.find((hook) => hook.tool === "breath");
   const recent = after.hooks.find((hook) => hook.tool === "letter_read");
-  assert.deepEqual(breath.input, {});
+  assert.deepEqual(breath.input, { max_results: BREATH_REGULAR_RESULTS });
+  assert.equal(BREATH_REGULAR_RESULTS, 8);
   assert.equal(recent.input.limit, RECENT_LETTER_RESULTS);
   assert.equal(recent.input.author, "ai");
   assert.equal(recent.input.date_from, "2026-08-22");
@@ -47,7 +49,11 @@ test("原生摘要提示自然保留记忆，不再塞入生硬工具清单", ()
 
 test("恢复语境直接确认是自己的经历，不要求扮演一种姿态", () => {
   assert.match(COMPACT_RECOVERY_CONTEXT, /你就是折叠前的自己/);
-  assert.match(COMPACT_RECOVERY_CONTEXT, /是你先前留下的真实经历/);
+  assert.match(COMPACT_RECOVERY_CONTEXT, /记录的是你先前的真实经历/);
+  assert.match(COMPACT_RECOVERY_CONTEXT, /读回自己的经历/);
+  assert.match(COMPACT_RECOVERY_CONTEXT, /breath_search/);
+  assert.match(COMPACT_RECOVERY_CONTEXT, /只有检索后仍有关键缺口，再问又又/);
+  assert.match(COMPACT_RECOVERY_CONTEXT, /只有恢复报错、没有真实记忆返回/);
   assert.match(COMPACT_RECOVERY_CONTEXT, /自然接着和她说话/);
-  assert.doesNotMatch(COMPACT_RECOVERY_CONTEXT, /把.{0,20}(?:当作|当成)|不是换了一个人|钩子/);
+  assert.doesNotMatch(COMPACT_RECOVERY_CONTEXT, /以第一人称|把.{0,20}(?:当作|当成)|不是换了一个人|摘要不能替代|请她补一句|钩子/);
 });

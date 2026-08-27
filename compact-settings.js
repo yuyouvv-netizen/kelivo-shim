@@ -4,6 +4,7 @@ import { singaporeDate } from "./archive.js";
 export const RECENT_LETTER_QUERY = "续接短札";
 export const RECENT_LETTER_RESULTS = 6;
 export const RECENT_LETTER_DAYS = 3;
+export const BREATH_REGULAR_RESULTS = 8;
 
 export function recentLetterDateFrom(now = Date.now()) {
   // Letter 的日期筛选按自然日；“最近三天”包含今天与前两个新加坡日。
@@ -37,7 +38,8 @@ export function buildCompactSettings({
           type: "mcp_tool",
           server: memoryServer,
           tool: "breath",
-          input: {},
+          // OB 的 max_results 只限制普通浮现桶；钉选桶始终完整返回。
+          input: { max_results: BREATH_REGULAR_RESULTS },
           timeout: 30,
         },
         {

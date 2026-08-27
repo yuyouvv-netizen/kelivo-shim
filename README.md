@@ -47,6 +47,7 @@
 | `title.js` | 识别 Kelivo 后台标题请求并本地生成短标题,与常驻对话隔离 |
 | `turn-watchdog.js` | 单轮无活动超时看门狗,先温和中止本轮、再按需重启 |
 | `wake-mode.js` | 自主心跳白天/全天模式的私人磁盘持久化与时段判断 |
+| `bird-mcp-diagnostic.js` | 只读验证啵啵鸟 MCP 的初始化与工具清单，不返回私密地址 |
 | `wake-admin.js` | 手机 `/admin/wake` 心跳时段开关,与会话开关同样使用 `SHIM_KEY`、CSRF 和安全 Cookie |
 | `ai-name.js` | Bark 通知标题与 Kelivo 模型显示名的私人磁盘持久化、热更新和输入校验 |
 | `import-history.js` | Claude 官端历史的一次性私有持久化、旧会话指针备份/恢复与原子消费 |

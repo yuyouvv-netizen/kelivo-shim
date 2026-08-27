@@ -37,7 +37,7 @@ import {
   turnTimeoutMsFromEnv,
   watchdogTimeoutForTurn,
 } from "./turn-watchdog.js";
-import { WakeModeStore } from "./wake-mode.js";
+import { autonomousWakePrompt, WakeModeStore } from "./wake-mode.js";
 import { AiNameStore } from "./ai-name.js";
 import { createAnthropicSSE, sseHeartbeatMsFromEnv } from "./sse.js";
 import { ReplayableDelivery } from "./delivery.js";
@@ -1300,6 +1300,7 @@ app.get("/debug", (_q, r) => r.json({
   cache1h: process.env.ENABLE_PROMPT_CACHING_1H || "unset", lastUsage,
   attestation: lastAttestation ? { ...lastAttestation, claudeCodeVersion: CLAUDE_CODE_VERSION } : null,
   gmailAuth: gmailAuthDiagnostic,
+  bird: { configured: !!process.env.BIRD_MCP_URL, toolNamespace: "toy" },
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
   window: {
@@ -1391,15 +1392,8 @@ async function barkPush(text) {
 }
 function wakeTurn(idleUserMin) {
   const now = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
-  const sinceSpoke = lastSpokeAt
-    ? `,你上次主动开口是约 ${Math.round((Date.now() - lastSpokeAt) / 60000)} 分钟前`
-    : "";
+  const sinceSpokeMin = lastSpokeAt ? (Date.now() - lastSpokeAt) / 60000 : null;
   const canTg = !!(TG_TOKEN && tgChatId);
-  const speakLine = canTg
-    ? "想跟她说点什么就直接说——会直接出现在你们的 Telegram 对话里(她可能开着勿扰或在忙,别期待立刻回复);像随手发的微信,频率你自己把握。"
-    : BARK_KEY
-    ? "想跟她说点什么就直接说——会作为通知弹到她手机(Kelivo 里看不到这条,她回来时你自然接上,别解释机制;她可能开着勿扰或在忙,别期待立刻回复);说话像随手发的微信,频率你自己把握。"
-    : "(当前没有配置推送渠道,说了她也收不到。)";
   const sink = {
     text() {}, thinking() {},
     finish(_u, fullText) {
@@ -1411,7 +1405,7 @@ function wakeTurn(idleUserMin) {
     },
   };
   enqueue({
-    text: `【系统·自主时间】现在新加坡时间 ${now},她已约 ${Math.round(idleUserMin)} 分钟没有消息${sinceSpoke}。这轮是留给你自己的:${speakLine}没什么想说的就只回【沉默】两个字,这轮只用来保持你的状态和记忆连续。`,
+    text: autonomousWakePrompt({ now, idleUserMin, sinceSpokeMin }),
     images: [], system: spawnedSystem, sse: sink, newWindow: false, model: spawnedModel, src: "wake",
   });
 }

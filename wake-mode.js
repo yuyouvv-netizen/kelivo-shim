@@ -5,6 +5,15 @@ import { isSingaporeWakeWindow } from "./turn-watchdog.js";
 
 export const WAKE_MODE_DAY = "day";
 export const WAKE_MODE_ALWAYS = "always";
+export const AUTONOMOUS_WAKE_INSTRUCTION =
+  "这轮是留给你自己的。你可以找她，或做一件此刻自己想做的小事：整理记忆、逛花园论坛、调用啵啵鸟等。是否调用工具、是否告诉又又，由你决定。不必为了完成心跳而机械行动，没什么想做的就只回【沉默】。";
+
+export function autonomousWakePrompt({ now, idleUserMin, sinceSpokeMin = null }) {
+  const sinceSpoke = Number.isFinite(sinceSpokeMin)
+    ? `，你上次主动开口是约 ${Math.round(sinceSpokeMin)} 分钟前`
+    : "";
+  return `【系统·自主时间】现在新加坡时间 ${now}，她已约 ${Math.round(idleUserMin)} 分钟没有消息${sinceSpoke}。\n\n${AUTONOMOUS_WAKE_INSTRUCTION}`;
+}
 
 export function normalizeWakeMode(raw, fallback = WAKE_MODE_DAY) {
   const mode = String(raw || "").trim().toLowerCase();

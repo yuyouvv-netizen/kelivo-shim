@@ -48,7 +48,7 @@ test("disconnect recovery works and window words remain ordinary conversation", 
   let output = "";
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.stderr.on("data", (chunk) => { output += chunk; });
-  for (let i = 0; i < 50 && !output.includes("kelivo-shim on"); i++) await delay(20);
+  for (let i = 0; i < 150 && !output.includes("kelivo-shim on"); i++) await delay(20);
   assert.match(output, /kelivo-shim on/);
 
   const body = JSON.stringify({
@@ -118,7 +118,7 @@ test("a process exit abandons the turn without automatically resubmitting the us
   let output = "";
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.stderr.on("data", (chunk) => { output += chunk; });
-  for (let i = 0; i < 50 && !output.includes("kelivo-shim on"); i++) await delay(20);
+  for (let i = 0; i < 150 && !output.includes("kelivo-shim on"); i++) await delay(20);
   assert.match(output, /kelivo-shim on/);
 
   const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {

@@ -10,8 +10,8 @@ async function startAdmin(express, getStatus = () => ({
   tokens: 61200,
   limit: 167000,
   pct: 37,
-  warnPct: 80,
-  archivePct: 85,
+  warnPct: 85,
+  archivePct: 90,
   compactions: 1,
   lastCompactAt: "2026-08-24T01:30:00.000Z",
   lastCompactPreTokens: 166400,
@@ -69,10 +69,12 @@ function fakeResponse() {
 test("window progress helpers report K values and bounded stages", () => {
   assert.equal(tokenK(61200), "61.2K");
   assert.match(windowStage({ tokens: 61200, limit: 167000, pct: 37 }).text, /空间充足/);
-  assert.match(windowStage({ tokens: 143000, limit: 167000, pct: 86, autoArchived: true }).text, /续接信已经保存/);
-  const html = windowPage({ tokens: 300000, limit: 167000, pct: 180, warnPct: 80, archivePct: 85 });
+  assert.match(windowStage({ tokens: 151000, limit: 167000, pct: 91, autoArchived: true }).text, /续接信已经保存/);
+  const html = windowPage({ tokens: 300000, limit: 167000, pct: 180, warnPct: 85, archivePct: 90 });
   assert.match(html, /aria-valuenow="100"/);
   assert.doesNotMatch(html, /width:180%/);
+  assert.match(html, /85% 提醒线/);
+  assert.match(html, /90% 写信线/);
 });
 
 test("window page shows a passive model and thinking receipt", () => {
@@ -161,7 +163,7 @@ test("window progress page requires SHIM_KEY and performs no write action", asyn
   let reads = 0;
   const admin = await startAdmin(express, () => {
     reads += 1;
-    return { model: "claude-opus-4-6", tokens: 61200, limit: 167000, pct: 37, warnPct: 80, archivePct: 85 };
+    return { model: "claude-opus-4-6", tokens: 61200, limit: 167000, pct: 37, warnPct: 85, archivePct: 90 };
   });
   t.after(admin.close);
 

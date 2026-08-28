@@ -205,7 +205,7 @@ if (process.env.BIRD_MCP_URL) {
 // ---- 长对话记忆保全 ----------------------------------------------------------
 // 普通订阅模型固定按标准 200K 算；只有模型名显式带 [1m] 才启用 1M。
 // 这会把旧部署遗留的 1M 环境变量安全夹回真实模型上限，避免 shim 还在等
-// 80%/85% 时 Claude Code 已先于它完成原生压缩。
+// 85%/90% 时 Claude Code 已先于它完成原生压缩。
 const autoCompactRaw = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ||
   process.env.AUTO_COMPACT_WINDOW || String(DEFAULT_AUTO_COMPACT_WINDOW);
 const CONFIGURED_AUTO_COMPACT_WINDOW = Number(autoCompactRaw) > 0
@@ -238,9 +238,9 @@ const importHistory = new ImportHistoryStore({
 if (importHistory.ensureFreshSession()) {
   log("[import] pending move forced a fresh native session");
 }
-const WINDOW_WARN_PCT = +(process.env.WINDOW_WARN_PCT || 80);
+const WINDOW_WARN_PCT = +(process.env.WINDOW_WARN_PCT || 85);
 const WINDOW_AUTO_ARCHIVE = process.env.WINDOW_AUTO_ARCHIVE !== "0";
-const WINDOW_ARCHIVE_PCT = +(process.env.WINDOW_ARCHIVE_PCT || 85);
+const WINDOW_ARCHIVE_PCT = +(process.env.WINDOW_ARCHIVE_PCT || 90);
 const COMPACT_HOOK = process.env.COMPACT_HOOK !== "0";
 
 let windowTokens = 0;

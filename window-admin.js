@@ -35,8 +35,8 @@ export function tokenK(value) {
 
 export function windowStage(status = {}) {
   const pct = Math.max(0, finiteNumber(status.pct));
-  const warnPct = finiteNumber(status.warnPct, 80);
-  const archivePct = finiteNumber(status.archivePct, 85);
+  const warnPct = finiteNumber(status.warnPct, 85);
+  const archivePct = finiteNumber(status.archivePct, 90);
   if (!(finiteNumber(status.limit) > 0)) return { tone: "quiet", text: "还没有可用的窗口数据。" };
   if (finiteNumber(status.tokens) <= 0 && status.lastCompactAt) {
     return { tone: "fresh", text: "刚完成一次压缩，等待下一轮消息更新新的起步用量。" };
@@ -177,8 +177,8 @@ export function windowPage(status = {}, { session = null, editName = false, mess
   const pct = limit > 0
     ? Math.max(0, Math.min(100, Math.round(finiteNumber(status.pct, tokens / limit * 100))))
     : 0;
-  const warnPct = finiteNumber(status.warnPct, 80);
-  const archivePct = finiteNumber(status.archivePct, 85);
+  const warnPct = finiteNumber(status.warnPct, 85);
+  const archivePct = finiteNumber(status.archivePct, 90);
   const remaining = Math.max(0, limit - tokens);
   const stage = windowStage({ ...status, tokens, limit, pct, warnPct, archivePct });
   const letterState = status.autoArchive === false ? "自动写信已关闭"
@@ -194,8 +194,8 @@ export function windowPage(status = {}, { session = null, editName = false, mess
 <div class="grid">
   <div class="tile">距离自然压缩<strong>${tokenK(remaining)}</strong></div>
   <div class="tile">续接信<strong>${escapeHtml(letterState)}</strong></div>
-  <div class="tile">80% 提醒线<strong>${tokenK(limit * warnPct / 100)}</strong></div>
-  <div class="tile">85% 写信线<strong>${tokenK(limit * archivePct / 100)}</strong></div>
+  <div class="tile">${warnPct}% 提醒线<strong>${tokenK(limit * warnPct / 100)}</strong></div>
+  <div class="tile">${archivePct}% 写信线<strong>${tokenK(limit * archivePct / 100)}</strong></div>
 </div>
 ${attestationPanel(status)}
 ${barkNamePanel(status, session, editName, message, isError)}

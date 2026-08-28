@@ -7,8 +7,8 @@ const EMPTY = Object.freeze({ tracked: false, warned: false, archived: false });
 
 export function legacyWindowFlags({
   pct,
-  warnPct = 80,
-  archivePct = 85,
+  warnPct = 85,
+  archivePct = 90,
   autoArchive = true,
 } = {}) {
   const usage = Number(pct) || 0;

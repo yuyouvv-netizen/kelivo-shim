@@ -45,13 +45,13 @@ test("a real compact boundary resets both receipts for the same native session",
 });
 
 test("the first high-water observation of a legacy resumed session is adopted without replaying actions", () => {
-  assert.deepEqual(legacyWindowFlags({ pct: 79, warnPct: 80, archivePct: 85 }), {
+  assert.deepEqual(legacyWindowFlags({ pct: 84, warnPct: 85, archivePct: 90 }), {
     warned: false, archived: false,
   });
-  assert.deepEqual(legacyWindowFlags({ pct: 82, warnPct: 80, archivePct: 85 }), {
+  assert.deepEqual(legacyWindowFlags({ pct: 87, warnPct: 85, archivePct: 90 }), {
     warned: true, archived: false,
   });
-  assert.deepEqual(legacyWindowFlags({ pct: 96, warnPct: 80, archivePct: 85 }), {
+  assert.deepEqual(legacyWindowFlags({ pct: 96, warnPct: 85, archivePct: 90 }), {
     warned: true, archived: true,
   });
 });

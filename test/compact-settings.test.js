@@ -52,7 +52,9 @@ test("恢复语境直接确认是自己的经历，不要求扮演一种姿态",
   assert.match(COMPACT_RECOVERY_CONTEXT, /记录的是你先前的真实经历/);
   assert.match(COMPACT_RECOVERY_CONTEXT, /读回自己的经历/);
   assert.match(COMPACT_RECOVERY_CONTEXT, /breath_search/);
-  assert.match(COMPACT_RECOVERY_CONTEXT, /letter_read/);\n  assert.match(COMPACT_RECOVERY_CONTEXT, /检索后仍有关键缺口，再问又又/);
+  assert.doesNotMatch(COMPACT_RECOVERY_CONTEXT, /letter_read/);
+  assert.match(COMPACT_RECOVERY_CONTEXT, /同时检索普通记忆与续接信/);
+  assert.match(COMPACT_RECOVERY_CONTEXT, /检索后仍有关键缺口，再问又又/);
   assert.match(COMPACT_RECOVERY_CONTEXT, /只有恢复报错、没有真实记忆返回/);
   assert.match(COMPACT_RECOVERY_CONTEXT, /自然接着和她说话/);
   assert.doesNotMatch(COMPACT_RECOVERY_CONTEXT, /以第一人称|把.{0,20}(?:当作|当成)|不是换了一个人|摘要不能替代|请她补一句|钩子/);

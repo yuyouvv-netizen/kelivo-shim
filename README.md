@@ -5,6 +5,7 @@
 - 人设放服务端 CLAUDE.md,**不被 cloak 盖掉**,100% 生效
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
 - Kelivo 的思维链强度会透传为 Claude Code `--effort`;切档只重启运行管道并续接原生 session
+- 可用 `CLAUDE_SYSTEM_PROMPT_MODE=replace` 移除 Claude Code 原生软件工程提示词，同时保留 CLAUDE.md、MCP 工具和压缩恢复钩子
 - Claude Code 精确锁定在 `2.1.239`，并由 `package-lock.json` + `npm ci` 阻止部署时静默升级
 - 标准 200K 长对话在真实压缩线的 90% 自动写一封 OB Letter 续接信;压缩后自动取回全部钉选桶、按 OB 排名浮现的 8 个普通桶与最近三天的续接信
 - 异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底

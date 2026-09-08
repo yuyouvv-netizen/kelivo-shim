@@ -239,17 +239,8 @@ export function writeCredentialsSafely(credentialsFile, markerFile, credentials,
   }
 }
 
-function completedCurrentMigration(credentialsFile, markerFile) {
-  if (!fs.existsSync(credentialsFile) || !fs.lstatSync(credentialsFile).isFile() || !fs.existsSync(markerFile)) return false;
-  try {
-    return JSON.parse(fs.readFileSync(markerFile, "utf8"))?.migrationVersion === GMAIL_MIGRATION_VERSION;
-  } catch {
-    return false;
-  }
-}
-
 function loginPage(message = "") {
-  return page("Gmail 换到新邮箱", `<h1>Gmail 换到新邮箱</h1><p>只替换 Gmail MCP 的邮箱授权，不会改动 Claude、花园、Ombre 或啵啵鸟。</p>${message ? `<p class="err">${escapeHtml(message)}</p>` : ""}<form method="post" action="${GMAIL_OAUTH_BASE_PATH}/login" autocomplete="off"><label for="key">SHIM_KEY</label><input id="key" name="key" type="password" required autocomplete="off"><button type="submit">进入换号页</button></form><p class="muted">密钥只提交给你自己的 Zeabur 服务。</p>`);
+  return page("Gmail 重新授权", `<h1>Gmail 重新授权</h1><p>只更新 Gmail MCP 的邮箱授权，不会改动 Claude、花园、Ombre 或啵啵鸟。</p>${message ? `<p class="err">${escapeHtml(message)}</p>` : ""}<form method="post" action="${GMAIL_OAUTH_BASE_PATH}/login" autocomplete="off"><label for="key">SHIM_KEY</label><input id="key" name="key" type="password" required autocomplete="off"><button type="submit">进入授权页</button></form><p class="muted">密钥只提交给你自己的 Zeabur 服务。</p>`);
 }
 
 function adminPage(csrf) {
@@ -260,11 +251,11 @@ const statusEl=document.getElementById("status"),start=document.getElementById("
 async function post(path,body={}){const r=await fetch(base+path,{method:"POST",headers:{"content-type":"application/json","x-csrf-token":csrf},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||"请求失败");return j}
 async function refresh(){try{const r=await fetch(base+"/status",{cache:"no-store"});if(r.status===401){location.reload();return}const s=await r.json();statusEl.textContent=s.message;statusEl.className=s.status==="error"?"err":s.status==="stored"?"ok":"";start.disabled=s.status==="starting"||s.status==="exchanging";auth.classList.toggle("hide",!s.authUrl);paste.classList.toggle("hide",s.status!=="waiting_callback");if(s.authUrl)auth.href=s.authUrl}catch{}}
 start.onclick=async()=>{start.disabled=true;try{await post("/start")}catch(e){statusEl.textContent=e.message;statusEl.className="err"}refresh()};
-save.onclick=async()=>{const value=callback.value.trim();if(!value)return;save.disabled=true;statusEl.textContent="正在验证新邮箱，旧邮箱凭据暂时保留…";try{const j=await post("/callback",{callbackUrl:value});callback.value="";statusEl.textContent=j.message;statusEl.className="ok";paste.classList.add("hide");start.disabled=true}catch(e){statusEl.textContent=e.message;statusEl.className="err";save.disabled=false}};
+save.onclick=async()=>{const value=callback.value.trim();if(!value)return;save.disabled=true;statusEl.textContent="正在验证邮箱，现有凭据暂时保留…";try{const j=await post("/callback",{callbackUrl:value});callback.value="";statusEl.textContent=j.message;statusEl.className="ok";paste.classList.add("hide");start.disabled=true}catch(e){statusEl.textContent=e.message;statusEl.className="err";save.disabled=false}};
 saveFields.onclick=async()=>{const id=clientId.value.trim(),secret=clientSecret.value.trim();if(!id||!secret)return;saveFields.disabled=true;statusEl.textContent="正在把 OAuth 客户端保存到私有卷…";try{await post("/oauth-client-fields",{clientId:id,clientSecret:secret});clientId.value="";clientSecret.value="";await post("/start");statusEl.textContent="OAuth 客户端已保存，Google 授权链接已生成。";statusEl.className="ok"}catch(e){statusEl.textContent=e.message;statusEl.className="err";saveFields.disabled=false}refresh()};
 saveClient.onclick=async()=>{const value=clientJson.value.trim();if(!value)return;saveClient.disabled=true;statusEl.textContent="正在把 OAuth 客户端保存到私有卷…";try{await post("/oauth-client",{oauthClientJson:value});clientJson.value="";await post("/start");statusEl.textContent="OAuth 客户端已保存，Google 授权链接已生成。";statusEl.className="ok"}catch(e){statusEl.textContent=e.message;statusEl.className="err";saveClient.disabled=false}refresh()};
 refresh();setInterval(refresh,1800);`;
-  return { nonce, html: page("Gmail 换到新邮箱", `<h1>Gmail 换到新邮箱</h1><p id="status">正在读取状态…</p><button id="start" type="button">1. 生成 Google 授权链接</button><a id="auth" class="button hide" target="_blank" rel="noopener noreferrer">2. 打开 Google 授权页</a><div id="paste" class="hide"><p>在 Google 中选择<strong>新邮箱</strong>并允许访问。随后浏览器会跳到一个打不开的 <code>localhost</code> 页面——这是预期现象。</p><p>复制那个页面地址栏里的<strong>完整网址</strong>，回到这里粘贴；不要发到聊天里。</p><label for="callback">Google 返回网址</label><input id="callback" type="password" autocomplete="off" maxlength="8192"><button id="save" type="button">3. 验证并切换邮箱</button></div><details open><summary>只有 OAuth 客户端 ID 和客户端密钥？</summary><p>分别粘贴在下面。它们只会保存到你的私有卷，不会进入 GitHub 或日志，也不要发到聊天里。</p><label for="oauthClientId">OAuth 客户端 ID</label><input id="oauthClientId" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2048"><label for="oauthClientSecret">OAuth 客户端密钥</label><input id="oauthClientSecret" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2048"><button id="saveClientFields" type="button">保存两项并生成授权链接</button><details><summary>也可以粘贴完整 JSON 文件</summary><label for="oauthClientJson">Google OAuth 客户端 JSON</label><textarea id="oauthClientJson" autocomplete="off" spellcheck="false" maxlength="12000"></textarea><button id="saveClient" type="button">保存 JSON 并生成授权链接</button></details></details><p class="muted">新邮箱通过 Gmail API 验证后才会替换；旧凭据会保留一份私有备份。成功后服务自动重启，本入口自动关闭。</p>`, script, nonce) };
+  return { nonce, html: page("Gmail 重新授权", `<h1>Gmail 重新授权</h1><p id="status">正在读取状态…</p><button id="start" type="button">1. 生成 Google 授权链接</button><a id="auth" class="button hide" target="_blank" rel="noopener noreferrer">2. 打开 Google 授权页</a><div id="paste" class="hide"><p>在 Google 中选择<strong>需要连接的邮箱</strong>并允许访问。随后浏览器会跳到一个打不开的 <code>localhost</code> 页面——这是预期现象。</p><p>复制那个页面地址栏里的<strong>完整网址</strong>，回到这里粘贴；不要发到聊天里。</p><label for="callback">Google 返回网址</label><input id="callback" type="password" autocomplete="off" maxlength="8192"><button id="save" type="button">3. 验证并更新授权</button></div><details open><summary>需要更换 OAuth 客户端？</summary><p>通常不需要填写这里。只有 OAuth 客户端本身变更时，才分别粘贴下面两项。它们只会保存到你的私有卷，不会进入 GitHub 或日志，也不要发到聊天里。</p><label for="oauthClientId">OAuth 客户端 ID</label><input id="oauthClientId" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2048"><label for="oauthClientSecret">OAuth 客户端密钥</label><input id="oauthClientSecret" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2048"><button id="saveClientFields" type="button">保存两项并生成授权链接</button><details><summary>也可以粘贴完整 JSON 文件</summary><label for="oauthClientJson">Google OAuth 客户端 JSON</label><textarea id="oauthClientJson" autocomplete="off" spellcheck="false" maxlength="12000"></textarea><button id="saveClient" type="button">保存 JSON 并生成授权链接</button></details></details><p class="muted">邮箱通过 Gmail API 验证后才会替换现有授权；原凭据会保留一份私有备份。成功后服务自动重启。本入口继续受 SHIM_KEY 保护，可在授权失效时再次使用。</p>`, script, nonce) };
 }
 
 export function registerGmailOauthAdmin(app, {
@@ -279,14 +270,12 @@ export function registerGmailOauthAdmin(app, {
   log = (...args) => console.log(...args),
 } = {}) {
   if (!shimKey) {
-    app.get(GMAIL_OAUTH_BASE_PATH, (_req, res) => res.status(503).type("html").send(page("Gmail 换号尚未开放", "<h1>Gmail 换号尚未开放</h1><p>当前服务没有读取到 SHIM_KEY。请只检查环境变量名称，不要把密钥发到聊天里。</p>")));
+    app.get(GMAIL_OAUTH_BASE_PATH, (_req, res) => res.status(503).type("html").send(page("Gmail 重新授权尚未开放", "<h1>Gmail 重新授权尚未开放</h1><p>当前服务没有读取到 SHIM_KEY。请只检查环境变量名称，不要把密钥发到聊天里。</p>")));
     return { enabled: false, reason: "missing-shim-key", path: GMAIL_OAUTH_BASE_PATH };
   }
-  // Only this migration version can close the one-time page. Old/stale markers
-  // and malformed credential paths remain recoverable behind SHIM_KEY.
-  if (completedCurrentMigration(credentialsFile, markerFile)) {
-    return { enabled: false, reason: "migration-complete" };
-  }
+  // Keep the SHIM_KEY-protected page available after a successful migration.
+  // OAuth refresh tokens can later expire or be revoked, and reauthorization
+  // must not require deleting private-volume markers or deploying new code.
   if (typeof urlencoded !== "function" || typeof json !== "function" || typeof fetchImpl !== "function") throw new Error("gmail OAuth admin dependencies missing");
 
   const sessions = new Map();
@@ -351,7 +340,7 @@ export function registerGmailOauthAdmin(app, {
   });
 
   app.get(`${GMAIL_OAUTH_BASE_PATH}/status`, requireSession, (_req, res) => {
-    const messages = { idle: "尚未开始。", waiting_callback: "Google 授权链接已生成。", exchanging: "正在验证新邮箱…", stored: `新邮箱 ${flow.email || ""} 已验证，服务正在重启。`, error: flow.error || "换号失败。" };
+    const messages = { idle: "尚未开始。", waiting_callback: "Google 授权链接已生成。", exchanging: "正在验证邮箱…", stored: `邮箱 ${flow.email || ""} 已验证，服务正在重启。`, error: flow.error || "授权失败。" };
     res.json({ status: flow.status, authUrl: flow.authUrl, message: messages[flow.status] || messages.idle });
   });
 
@@ -400,13 +389,13 @@ export function registerGmailOauthAdmin(app, {
       Object.assign(flow, { status: "stored", authUrl: null, state: null, error: null, email: result.email });
       log("[gmail-oauth-admin] new Gmail credentials verified and stored in private volume");
       res.once("finish", () => { const timer = setTimeout(restart, 900); timer.unref?.(); });
-      res.json({ ok: true, message: `新邮箱 ${result.email} 已验证并保存，服务正在自动重启。` });
+      res.json({ ok: true, message: `邮箱 ${result.email} 已验证并保存，服务正在自动重启。` });
     } catch (error) {
       Object.assign(flow, { status: "error", authUrl: null, state: null, error: error.message, email: null });
       res.status(400).json({ error: error.message });
     }
   });
 
-  log("[gmail-oauth-admin] temporary mobile Gmail migration page enabled");
+  log("[gmail-oauth-admin] protected mobile Gmail authorization page enabled");
   return { enabled: true, path: GMAIL_OAUTH_BASE_PATH };
 }

@@ -170,6 +170,29 @@ test("a stale marker does not hide recovery page even when credentials are a fil
   assert.equal(result.enabled, true);
 });
 
+test("a completed migration keeps the protected page available for later reauthorization", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-reauthorize-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const credentialsFile = path.join(dir, "credentials.json");
+  const markerFile = path.join(dir, ".new-account-authorized");
+  fs.writeFileSync(credentialsFile, JSON.stringify({ access_token: "expired", refresh_token: "revoked" }));
+  fs.writeFileSync(markerFile, JSON.stringify({ completedAt: "2026-08-21T12:00:00.000Z", migrationVersion: 2 }));
+  const app = { use() {}, get() {}, post() {} };
+
+  const result = registerGmailOauthAdmin(app, {
+    shimKey: "secret",
+    credentialsFile,
+    markerFile,
+    urlencoded: () => (_req, _res, next) => next(),
+    json: () => (_req, _res, next) => next(),
+    fetchImpl: async () => { throw new Error("unused"); },
+    log: () => {},
+  });
+
+  assert.equal(result.enabled, true);
+  assert.equal(result.path, "/admin/gmail-oauth");
+});
+
 test("OAuth client discovery accepts the restored runtime location", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-gmail-keys-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

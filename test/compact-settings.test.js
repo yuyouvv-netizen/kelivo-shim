@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import {
   BREATH_REGULAR_RESULTS,
   buildCompactSettings,
+  RECENT_LETTER_DAYS,
   RECENT_LETTER_RESULTS,
   recentLetterDateFrom,
 } from "../compact-settings.js";
 import { compactInstructions } from "../compact-prompts.js";
 import { COMPACT_RECOVERY_CONTEXT } from "../compact-recovery-text.js";
 
-test("压缩后由 hook 自动取回钉选桶、八个普通桶和近期续接短札", () => {
+test("压缩后由 hook 自动取回钉选桶、十个普通桶和近期续接短札", () => {
   const now = Date.parse("2026-08-24T01:00:00+08:00");
   const settings = buildCompactSettings({ dir: "/src", memoryEnabled: true, now });
   const pre = settings.hooks.PreCompact[0].hooks[0];
@@ -21,16 +22,17 @@ test("压缩后由 hook 自动取回钉选桶、八个普通桶和近期续接�
   const breath = after.hooks.find((hook) => hook.tool === "breath");
   const recent = after.hooks.find((hook) => hook.tool === "letter_read");
   assert.deepEqual(breath.input, { max_results: BREATH_REGULAR_RESULTS });
-  assert.equal(BREATH_REGULAR_RESULTS, 8);
+  assert.equal(BREATH_REGULAR_RESULTS, 10);
+  assert.equal(RECENT_LETTER_DAYS, 5);
   assert.equal(recent.input.limit, RECENT_LETTER_RESULTS);
   assert.equal(recent.input.author, "ai");
-  assert.equal(recent.input.date_from, "2026-08-22");
+  assert.equal(recent.input.date_from, "2026-08-20");
   assert.match(recent.input.query, /续接短札/);
   assert.ok(after.hooks.some((hook) => hook.args?.[0] === "/src/compact-recovery-context.js"));
 });
 
-test("最近三天按新加坡自然日计算", () => {
-  assert.equal(recentLetterDateFrom(Date.parse("2026-08-24T00:30:00+08:00")), "2026-08-22");
+test("最近五天按新加坡自然日计算", () => {
+  assert.equal(recentLetterDateFrom(Date.parse("2026-08-24T00:30:00+08:00")), "2026-08-20");
 });
 
 test("没有 OB 时仍保留原生摘要，不注册失效的记忆调用", () => {

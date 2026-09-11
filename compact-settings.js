@@ -3,11 +3,11 @@ import { singaporeDate } from "./archive.js";
 
 export const RECENT_LETTER_QUERY = "续接短札";
 export const RECENT_LETTER_RESULTS = 6;
-export const RECENT_LETTER_DAYS = 3;
-export const BREATH_REGULAR_RESULTS = 8;
+export const RECENT_LETTER_DAYS = 5;
+export const BREATH_REGULAR_RESULTS = 10;
 
 export function recentLetterDateFrom(now = Date.now()) {
-  // Letter 的日期筛选按自然日；“最近三天”包含今天与前两个新加坡日。
+  // Letter 的日期筛选按自然日；“最近五天”包含今天与前四个新加坡日。
   return singaporeDate(Number(now) - (RECENT_LETTER_DAYS - 1) * 24 * 60 * 60 * 1000);
 }
 

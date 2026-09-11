@@ -33,6 +33,7 @@ async function startServer(t, mode) {
       CLAUDE_BIN: fakeClaude,
       FAKE_CLAUDE_EMPTY_SUCCESS: mode === "empty" ? "1" : "0",
       FAKE_CLAUDE_API_ERROR: mode === "api-error" ? "1" : "0",
+      FAKE_CLAUDE_RESULT_ONLY_TEXT: mode === "result-only" ? "1" : "0",
       TURN_STATE_DIR: path.join(dir, "turn-state"),
       SESSION_STATE_FILE: path.join(dir, "session.json"),
       SESSION_BACKUP_DIR: path.join(dir, "backups"),
@@ -81,6 +82,32 @@ test("a zero-token success becomes a visible non-replayable empty-result", { tim
   assert.equal(debug.attestation.terminalReason, "completed");
   assert.equal(debug.delivery.currentStatus, "empty-result");
   assert.equal(debug.delivery.cachedReplies, 0);
+
+  child.kill("SIGTERM");
+  await Promise.race([once(child, "exit"), delay(3000)]);
+});
+
+test("a successful result envelope restores text missing from stream events", { timeout: 20_000 }, async (t) => {
+  const { base, child } = await startServer(t, "result-only");
+  const response = await fetch(`${base}/v1/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-opus-4-6",
+      stream: true,
+      messages: [{ role: "user", content: "请思考后回复" }],
+    }),
+  });
+  assert.equal(response.status, 200);
+  const stream = await response.text();
+  assert.match(stream, /我已经写完，正在交付。/);
+  assert.match(stream, /只出现在最终结果里的正文/);
+  assert.doesNotMatch(stream, /Claude 上游空回/);
+
+  const debug = await fetch(`${base}/debug`).then((reply) => reply.json());
+  assert.equal(debug.attestation.status, "completed");
+  assert.equal(debug.attestation.emptyResult, false);
+  assert.equal(debug.delivery.currentStatus, "completed");
 
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), delay(3000)]);

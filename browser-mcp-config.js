@@ -3,6 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_FILES = [".mcp.json", "/persona/.mcp.json"];
+const BROWSER_URL_REFERENCE = "${BROWSER_MCP_URL}";
+const BROWSER_TOKEN_REFERENCE = "${BROWSER_MCP_TOKEN}";
 
 function browserEntryFromEnv(env) {
   const rawUrl = String(env.BROWSER_MCP_URL || "").trim();
@@ -31,21 +33,27 @@ function browserEntryFromEnv(env) {
 
   return {
     type: "http",
-    url: rawUrl,
-    headers: { "X-Token": token },
+    // Claude Code expands these references from the process environment when
+    // it loads .mcp.json. The real endpoint and token never need to touch disk.
+    url: BROWSER_URL_REFERENCE,
+    headers: { "X-Token": BROWSER_TOKEN_REFERENCE },
   };
 }
 
 function writeJsonAtomic(file, value) {
   const next = JSON.stringify(value, null, 2) + "\n";
-  if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === next) return false;
+  if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === next) {
+    if ((fs.statSync(file).mode & 0o777) === 0o600) return false;
+    fs.chmodSync(file, 0o600);
+    return true;
+  }
 
   const dir = path.dirname(file);
-  const mode = fs.existsSync(file) ? fs.statSync(file).mode & 0o777 : 0o600;
   const temp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
   try {
-    fs.writeFileSync(temp, next, { mode });
+    fs.writeFileSync(temp, next, { mode: 0o600 });
     fs.renameSync(temp, file);
+    fs.chmodSync(file, 0o600);
   } finally {
     if (fs.existsSync(temp)) fs.unlinkSync(temp);
   }

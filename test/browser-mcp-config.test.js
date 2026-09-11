@@ -54,8 +54,8 @@ test("browser MCP is merged into runtime and persistent configs without replacin
     const persistent = JSON.parse(fs.readFileSync(f.persistent, "utf8"));
     const expected = {
       type: "http",
-      url: "https://browser.example/mcp",
-      headers: { "X-Token": "private-browser-token" },
+      url: "${BROWSER_MCP_URL}",
+      headers: { "X-Token": "${BROWSER_MCP_TOKEN}" },
     };
     assert.deepEqual(runtime.mcpServers.browser, expected);
     assert.deepEqual(persistent.mcpServers.browser, expected);
@@ -63,6 +63,10 @@ test("browser MCP is merged into runtime and persistent configs without replacin
     assert.ok(runtime.mcpServers.gmail);
     assert.ok(persistent.mcpServers.ombre);
     assert.ok(persistent.mcpServers.toy);
+    assert.equal(fs.readFileSync(f.runtime, "utf8").includes("private-browser-token"), false);
+    assert.equal(fs.readFileSync(f.persistent, "utf8").includes("browser.example"), false);
+    assert.equal(fs.statSync(f.runtime).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(f.persistent).mode & 0o777, 0o600);
 
     assert.deepEqual(configureBrowserMcp({ env, files: [f.runtime, f.persistent] }), {
       configured: true,
@@ -87,7 +91,9 @@ test("browser MCP creates a missing persistent config from the runtime config", 
     const persistent = JSON.parse(fs.readFileSync(f.persistent, "utf8"));
     assert.ok(persistent.mcpServers.ombre);
     assert.ok(persistent.mcpServers.gmail);
-    assert.equal(persistent.mcpServers.browser.url, "https://browser.example/mcp/");
+    assert.equal(persistent.mcpServers.browser.url, "${BROWSER_MCP_URL}");
+    assert.equal(persistent.mcpServers.browser.headers["X-Token"], "${BROWSER_MCP_TOKEN}");
+    assert.equal(fs.statSync(f.persistent).mode & 0o777, 0o600);
   } finally {
     f.cleanup();
   }

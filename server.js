@@ -398,6 +398,14 @@ function finishTurnDelivery(stalled, usage, status, replayable) {
       status,
     });
   } else turnState.mark(status, { delivered });
+  log("[delivery] turn finished", {
+    src: stalled?.src || "unknown",
+    status,
+    chars: stalled?.fullText?.length || 0,
+    delivered,
+    replayable: !!replayable,
+    resultFallback: !!stalled?.resultTextFallbackUsed,
+  });
   return delivered;
 }
 
@@ -769,6 +777,17 @@ function assistantTextOf(message) {
     .replace(/‖/g, "\n");
 }
 
+function successfulResultText(ev) {
+  const subtype = ev?.subtype || "success";
+  const hasApiErrorStatus = ev?.api_error_status !== null && ev?.api_error_status !== undefined &&
+    String(ev.api_error_status).trim() !== "";
+  const terminalReason = typeof ev?.terminal_reason === "string" ? ev.terminal_reason : null;
+  if (subtype !== "success" || ev?.is_error === true || hasApiErrorStatus ||
+      (terminalReason && terminalReason !== "completed")) return "";
+  const text = typeof ev?.result === "string" ? ev.result : "";
+  return text.trim() ? text.replace(/‖/g, "\n") : "";
+}
+
 function usageIsZero(usage) {
   if (!usage || typeof usage !== "object") return true;
   const keys = [
@@ -1031,6 +1050,13 @@ function handleEvent(ev, sourceProc = proc) {
     if (!turn.fullText && turn.assistantTextCandidate) {
       appendTurnText(turn, turn.assistantTextCandidate);
     }
+    if (!turn.fullText) {
+      const resultText = successfulResultText(ev);
+      if (resultText) {
+        turn.resultTextFallbackUsed = true;
+        appendTurnText(turn, resultText);
+      }
+    }
     const failure = resultFailure(turn, ev);
     if (turn.attestation) Object.assign(turn.attestation, failure);
     turnState.event("result", {
@@ -1169,6 +1195,7 @@ function pump() {
     watchdogTimeoutMs,
     item, requestKey: item.requestKey || null,
     toolNames: new Map(), toolInputs: {}, assistantTextCandidate: "", assistantError: null,
+    resultTextFallbackUsed: false,
   };
   if (turn.src === "kelivo") {
     turn.attestation = {

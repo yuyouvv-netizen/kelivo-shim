@@ -60,6 +60,33 @@ input.on("line", (line) => {
     }), 20);
     return;
   }
+  if (process.env.FAKE_CLAUDE_RESULT_ONLY_TEXT === "1") {
+    setTimeout(() => {
+      send({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { model, usage: { input_tokens: 10, cache_read_input_tokens: 0 } },
+        },
+      });
+      send({
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+      });
+      send({
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "我已经写完，正在交付。" } },
+      });
+      send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+      send({
+        type: "result", subtype: "success", is_error: false,
+        api_error_status: null, terminal_reason: "completed",
+        result: "只出现在最终结果里的正文",
+        usage: { input_tokens: 10, output_tokens: 12 },
+      });
+    }, 20);
+    return;
+  }
   setTimeout(() => {
     send({
       type: "stream_event",

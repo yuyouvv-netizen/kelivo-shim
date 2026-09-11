@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 24186)
-Total output lines: 2168
-
 // kelivo-shim — Anthropic /v1/messages  ->  常驻 claude -p (stream-json)
 //
 // 手机 Kelivo(供应商类型=Claude,Base URL 指向本 shim) --/v1/messages--> shim
@@ -902,7 +899,424 @@ function handleEvent(ev, sourceProc = proc) {
         turn.sse?.thinking(`\n〔${label}〕\n`);
         if (OB_TRACE) {
           turn.obBlocks[e.index] = { name: short, buf: "" };
-          if (cb.id) obToo…4186 tokens truncated…ress.urlencoded,
+          if (cb.id) obToolNames.set(cb.id, short);
+        }
+      }
+    }
+    if (e.type === "content_block_delta") {
+      if (d.type === "text_delta" && d.text) {
+        const t = d.text.replace(/‖/g, "\n");
+        turn.fullText += t;
+        turn.sse?.text(t);
+        turnState.updateResponse(turn.fullText);
+      }
+      else if (d.type === "thinking_delta") {
+        if (turn.attestation) turn.attestation.thinkingSeen = true;
+        turn.sse?.thinking(d.thinking || d.text || "");
+      }
+      else if (d.type === "signature_delta") {
+        if (turn.attestation && typeof d.signature === "string" && d.signature) {
+          turn.attestation.signatureSeen = true;
+          turn.attestation.signatureLength = Math.max(
+            turn.attestation.signatureLength,
+            d.signature.length,
+          );
+        }
+      }
+      else if (d.type === "input_json_delta") {
+        if (turn.toolInputs[e.index]) turn.toolInputs[e.index].buf += d.partial_json || "";
+        if (turn.obBlocks[e.index]) turn.obBlocks[e.index].buf += d.partial_json || "";
+      }
+    }
+    if (e.type === "content_block_stop" && turn.toolInputs[e.index]) {
+      const tool = turn.toolInputs[e.index];
+      delete turn.toolInputs[e.index];
+      if (tool.buf) turnState.event("tool_input", { tool: tool.name, input: tool.buf });
+    }
+    if (e.type === "content_block_stop" && turn.obBlocks[e.index]) {
+      const b = turn.obBlocks[e.index];
+      delete turn.obBlocks[e.index];
+      let args = (b.buf || "").trim();
+      try { args = JSON.stringify(JSON.parse(args)); } catch {}
+      if (args && args !== "{}") turn.sse?.thinking(`→ ${b.name} ${trunc(args, OB_TRACE_ARG_MAX)}\n`);
+    }
+    return;
+  }
+  if (ev.type === "assistant") {
+    touchTurnActivity(turn);
+    if (turn.attestation) {
+      const upstreamModel = typeof ev.message?.model === "string" ? ev.message.model.trim() : "";
+      if (upstreamModel) turn.attestation.upstreamModel = upstreamModel;
+      const assistantError = diagnosticText(ev.message?.error || ev.error);
+      if (assistantError) {
+        turn.assistantError = assistantError;
+        turn.attestation.assistantError = assistantError;
+      }
+    }
+    const candidate = assistantTextOf(ev.message);
+    if (candidate) turn.assistantTextCandidate = candidate;
+    return;
+  }
+  if (ev.type === "rate_limit_event" || ev.type === "rate_limit") {
+    const info = ev.rate_limit_info || ev.rateLimitInfo || {};
+    if (turn.attestation) {
+      turn.attestation.rateLimitStatus = typeof info.status === "string" ? info.status : null;
+      turn.attestation.rateLimitType = typeof info.rate_limit_type === "string"
+        ? info.rate_limit_type : null;
+      turn.attestation.rateLimitResetsAt = info.resets_at !== null && info.resets_at !== undefined &&
+        Number.isFinite(Number(info.resets_at))
+        ? Number(info.resets_at) : null;
+    }
+    turnState.event("rate_limit", {
+      status: info.status || "unknown",
+      type: info.rate_limit_type || null,
+      resetsAt: info.resets_at || null,
+    });
+    // 限流通知不是模型活动，不能用它无限续命看门狗。
+    return;
+  }
+  if (ev.type === "user") {
+    touchTurnActivity(turn);
+    const cont = ev.message?.content;
+    if (Array.isArray(cont)) for (const block of cont) {
+      if (block.type !== "tool_result") continue;
+      const toolName = turn.toolNames.get(block.tool_use_id) || "unknown-tool";
+      turn.toolNames.delete(block.tool_use_id);
+      const resultText = typeof block.content === "string" ? block.content
+        : Array.isArray(block.content) ? block.content.map((x) => x.text || "").join(" ") : "";
+      turnState.event("tool_result", {
+        tool: toolName,
+        status: block.is_error === true ? "error" : "returned",
+        result: resultText.replace(/\s+/g, " ").trim(),
+      });
+    }
+  }
+  // 安全阀:letter_write 只有返回 `💌letter→… […]` 才算真正落盘。
+  // 同时兼容更新前在途的 hold/grow 与旧 archive_session。与 OB_TRACE 无关。
+  if (ev.type === "user" && archiveCalls.size) {
+    const cont = ev.message?.content;
+    if (Array.isArray(cont)) for (const b of cont) {
+      if (b.type === "tool_result" && archiveCalls.has(b.tool_use_id)) {
+        const archiveTool = archiveCalls.get(b.tool_use_id);
+        archiveCalls.delete(b.tool_use_id);
+        const txt = typeof b.content === "string" ? b.content
+          : Array.isArray(b.content) ? b.content.map((x) => x.text || "").join(" ") : "";
+        if (archiveToolResultOk(archiveTool, txt, b.is_error === true) && turn) turn.archiveOk = true;
+      }
+    }
+  }
+  // OB 工具返回(tool_result 以 user 事件回流):截取摘要进思考链
+  if (OB_TRACE && ev.type === "user") {
+    const cont = ev.message?.content;
+    if (Array.isArray(cont)) for (const b of cont) {
+      if (b.type === "tool_result" && obToolNames.has(b.tool_use_id)) {
+        const name = obToolNames.get(b.tool_use_id);
+        obToolNames.delete(b.tool_use_id);
+        let txt = "";
+        if (typeof b.content === "string") txt = b.content;
+        else if (Array.isArray(b.content)) txt = b.content.map((x) => x.text || "").join(" ");
+        txt = txt.replace(/\s+/g, " ").trim();
+        if (txt) turn.sse?.thinking(`← ${name}: ${trunc(txt, OB_TRACE_RES_MAX)}\n`);
+      }
+    }
+    return;
+  }
+  if (ev.type === "result") {
+    lastUsage = ev.usage || null; // 供 /debug 查缓存字段
+    lastTurnAt = Date.now(); // 任何一轮完成都刷新了缓存 TTL,自主唤醒以此计时
+    if (turn.peakPrefix > 0) {
+      windowTokens = turn.peakPrefix;
+      checkWindowUsage();
+    }
+    if (!turn.fullText && turn.assistantTextCandidate) {
+      appendTurnText(turn, turn.assistantTextCandidate);
+    }
+    const failure = resultFailure(turn, ev);
+    if (turn.attestation) Object.assign(turn.attestation, failure);
+    turnState.event("result", {
+      subtype: ev.subtype || "success",
+      isError: failure.isError,
+      apiErrorStatus: failure.apiErrorStatus,
+      terminalReason: failure.terminalReason,
+      emptyResult: failure.emptyResult,
+    });
+    if (turn.interruptRequestedAt) {
+      clearInterruptGrace(turn);
+      const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
+      if (interactive) {
+        const warning = `${turn.fullText ? "\n\n" : ""}⚠️〔本轮已中止〕驻留会话仍保留。若刚才调用了论坛、邮箱等工具，请先确认动作是否已经完成，再决定是否重发。`;
+        turn.fullText += warning;
+        turn.sse?.text(warning);
+      }
+    } else if (failure.failed) {
+      log("[result-error]", {
+        subtype: ev.subtype || "success",
+        isError: failure.isError,
+        apiErrorStatus: failure.apiErrorStatus,
+        terminalReason: failure.terminalReason,
+        emptyResult: failure.emptyResult,
+      });
+      const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
+      if (interactive) appendTurnText(turn, `${turn.fullText ? "\n\n" : ""}${failureNotice(turn.attestation || failure)}`);
+    }
+    const wantSwitch = turn.newWindow;
+    const archivedOk = turn.archiveOk;
+    const wasAutoArchive = turn.autoArchive;
+    if (wasAutoArchive) {
+      windowArchiveQueued = false;
+      windowAutoArchived = archivedOk;
+      persistWindowThresholdState();
+      if (archivedOk) log("[window] auto-archive confirmed");
+      else {
+        log("[window] auto-archive failed; will retry on a later turn");
+        notifyMemory("⚠️ 压缩前自动归档这次没有确认成功，窗口仍保留，稍后会重试。");
+      }
+    }
+    // 安全阀:想换窗但没成功归档 → 不换窗、保住窗口、提示她(宁可不换,绝不丢记忆)
+    if (wantSwitch && !archivedOk) {
+      turn.sse?.text("\n\n⚠️〔窗口保住了〕这次没成功归档,为防丢记忆没有换窗。想换新窗口,请先确认归档成功。");
+      log("[window] switch requested but no successful archive — keeping window");
+    }
+    const usage = ev.usage ? { output_tokens: ev.usage.output_tokens } : undefined;
+    if (turn.attestation) {
+      turn.attestation.status = turn.interruptRequestedAt ? "interrupted"
+        : failure.emptyResult ? "empty-result"
+          : failure.failed ? "upstream-error" : "completed";
+      turn.attestation.completedAt = new Date().toISOString();
+    }
+    const doKill = wantSwitch && archivedOk && proc;
+    const replayable = !failure.failed && (!ev.subtype || ev.subtype === "success") && !turn.interruptRequestedAt;
+    const deliveryStatus = turn.interruptRequestedAt ? "interrupted"
+      : failure.emptyResult ? "empty-result"
+        : failure.failed ? "upstream-error" : "completed";
+    turn.done = true;
+    turnWatchdog.disarm(turn);
+    finishTurnDelivery(turn, usage, deliveryStatus, replayable);
+    snapshotNativeSessionSoon();
+    turn = null;
+    busy = false;
+    if (doKill) {
+      log("[window] archived ok, restarting proc");
+      skipHistoryOnNextSpawn = true; // 外部主动换 session 后不要把 Kelivo 旧聊天灌回去
+      forceFreshSession = true;
+      clearSessionState(SESSION_STATE_FILE);
+      nativeSessionId = null;
+      nativeSessionFingerprint = null;
+      nativeSessionResumed = false;
+      const old = proc; proc = null;
+      try { old.kill(); } catch {}
+    }
+    if (shuttingDown) finishShutdown();
+    else pump();
+  }
+}
+
+// ---- 队列 / 喂消息 -----------------------------------------------------------
+function enqueue(item) { queue.push(item); pump(); }
+function pump() {
+  if (shuttingDown || busy || !queue.length) return;
+  const item = queue.shift();
+  busy = true;
+
+  // 世界书、模型或前端推理档位变了就重启进程再喂。单独切 effort
+  // 仍恢复同一个原生 session；只有模型/世界书改变才真正开新会话。
+  const wantModel = item.model || spawnedModel;
+  const wantEffort = normalizeClaudeEffort(item.effort, wantModel, spawnedEffort || effortFor(wantModel));
+  const identityChanged = item.system !== spawnedSystem || wantModel !== spawnedModel;
+  const effortChanged = wantEffort !== spawnedEffort;
+  if (proc && (identityChanged || effortChanged)) {
+    if (identityChanged) {
+      forceFreshSession = true;
+      clearSessionState(SESSION_STATE_FILE);
+      nativeSessionId = null;
+      nativeSessionFingerprint = null;
+      nativeSessionResumed = false;
+    } else {
+      snapshotNativeSessionSoon();
+      log("[claude] applying Kelivo effort", spawnedEffort, "->", wantEffort);
+    }
+    const old = proc; proc = null;
+    try { old.kill(); } catch {}
+  }
+  ensureProc(item.system, wantModel, wantEffort);
+
+  const watchdogTimeoutMs = watchdogTimeoutForTurn({
+    tokens: windowTokens,
+    limit: activeWindowLimit,
+    archiveReceipt: windowAutoArchived,
+    defaultTimeoutMs: TURN_TIMEOUT_MS,
+    compactTimeoutMs: COMPACT_TURN_TIMEOUT_MS,
+    compactPct: COMPACT_WATCHDOG_PCT,
+  });
+
+  let text = item.text;
+  if (item.recovery && procNeedsHistory) {
+    text = withRecoveredHistory(text, item.recovery);
+    procNeedsHistory = false;
+    if (item.recovery.text) {
+      lastRecoveryAt = Date.now();
+      lastRecoveryMessages = item.recovery.messages;
+      lastRecoveryChars = item.recovery.chars;
+      log("[recovery] restored Kelivo history", {
+        messages: lastRecoveryMessages, chars: lastRecoveryChars, truncated: item.recovery.truncated,
+      });
+    } else log("[recovery] fresh Kelivo chat; no prior history");
+  }
+  turn = {
+    sse: item.sse, fullText: "", newWindow: !!item.newWindow, obBlocks: {}, archiveOk: false,
+    peakPrefix: 0, autoArchive: !!item.autoArchive, src: item.src || "unknown",
+    startedAt: Date.now(), lastActivityAt: Date.now(), done: false, interruptTimer: null,
+    watchdogTimeoutMs,
+    item, requestKey: item.requestKey || null,
+    toolNames: new Map(), toolInputs: {}, assistantTextCandidate: "", assistantError: null,
+  };
+  if (turn.src === "kelivo") {
+    turn.attestation = {
+      requestedModel: item.requestedModel || wantModel,
+      configuredModel: wantModel,
+      upstreamModel: null,
+      requestedEffort: item.requestedEffort ?? null,
+      effectiveEffort: wantEffort,
+      effortSource: item.effortSource || "server-default",
+      thinkingType: item.thinkingType || null,
+      thinkingDisplay: "summarized",
+      thinkingSeen: false,
+      signatureSeen: false,
+      signatureLength: 0,
+      assistantError: null,
+      isError: false,
+      apiErrorStatus: null,
+      terminalReason: null,
+      stopReason: null,
+      emptyResult: false,
+      errorMessage: null,
+      rateLimitStatus: null,
+      rateLimitType: null,
+      rateLimitResetsAt: null,
+      localTraceEnabled: OB_TRACE,
+      status: "waiting",
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    };
+    lastAttestation = turn.attestation;
+  }
+  turnState.begin({
+    requestKey: turn.requestKey,
+    source: turn.src,
+    input: item.text,
+    model: wantModel,
+    sessionId: nativeSessionId,
+  });
+  turnWatchdog.arm(turn, watchdogTimeoutMs);
+  if (watchdogTimeoutMs > TURN_TIMEOUT_MS) {
+    log("[turn-watchdog] compression grace armed", {
+      pct: windowPct(windowTokens, activeWindowLimit),
+      timeoutMs: watchdogTimeoutMs,
+    });
+  }
+  const content = item.images && item.images.length
+    ? [{ type: "text", text }, ...item.images]
+    : text;
+  proc.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
+}
+
+// ---- Anthropic SSE 合成 ------------------------------------------------------
+function makeSSE(res, model = spawnedModel) {
+  return createAnthropicSSE(res, {
+    model,
+    forwardThinking: FORWARD_THINKING,
+    heartbeatMs: SSE_HEARTBEAT_MS,
+  });
+}
+
+// 非流式收集器(同接口,finish 时一次性返回 JSON)
+function makeCollector(res, model = spawnedModel) {
+  return {
+    isConnected() { return !res.headersSent && !res.writableEnded && !res.destroyed; },
+    text() {}, thinking() {},
+    finish(usage, fullText) {
+      res.json({ id: "msg_" + randomUUID().replace(/-/g, "").slice(0, 24), type: "message", role: "assistant", model, content: [{ type: "text", text: fullText || "" }], stop_reason: "end_turn", stop_sequence: null, usage: usage || { input_tokens: 0, output_tokens: 0 } });
+      return true;
+    },
+  };
+}
+
+// ---- 请求解析 ----------------------------------------------------------------
+function systemToText(s) {
+  if (!s) return "";
+  if (typeof s === "string") return s;
+  if (Array.isArray(s)) return s.map((b) => b.text || "").join("\n");
+  return "";
+}
+function extractImages(messages) {
+  const last = messages[messages.length - 1];
+  const out = [];
+  if (last && Array.isArray(last.content)) for (const b of last.content) if (b.type === "image") out.push(b);
+  return out;
+}
+
+const app = express();
+app.use(express.json({ limit: "100mb" }));
+registerClaudeOauthAdmin(app, {
+  shimKey: SHIM_KEY, claudeBin: CLAUDE_BIN, urlencoded: express.urlencoded, log,
+});
+registerGmailOauthAdmin(app, {
+  shimKey: SHIM_KEY, urlencoded: express.urlencoded, json: express.json, log,
+});
+registerSessionAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  log,
+  getStatus: () => ({
+    model: manualFreshPending ? FRESH_SESSION_MODEL : spawnedModel,
+    busy: busy || !!turn || queue.length > 0,
+    awaitingFirstMessage: manualFreshPending,
+  }),
+  startFreshSession: startManualFreshSession,
+});
+registerWakeAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  log,
+  getStatus: () => ({
+    mode: wakeMode.get(),
+    activeHoursSingapore: wakeMode.activeHours(),
+    checkMin: WAKE_CHECK_MIN,
+    idleMin: WAKE_IDLE_MIN,
+    bark: !!BARK_KEY,
+  }),
+  setMode: (mode) => wakeMode.set(mode),
+});
+registerWindowAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  log,
+  setAiName: (name) => aiName.set(name),
+  getStatus: () => ({
+    aiName: aiName.get(),
+    barkEnabled: !!BARK_KEY,
+    model: spawnedModel,
+    effort: spawnedEffort,
+    claudeCodeVersion: CLAUDE_CODE_VERSION,
+    attestation: lastAttestation ? { ...lastAttestation } : null,
+    busy: busy || !!turn || queue.length > 0,
+    tokens: Math.max(windowTokens, turn?.peakPrefix || 0),
+    limit: activeWindowLimit,
+    pct: windowPct(Math.max(windowTokens, turn?.peakPrefix || 0), activeWindowLimit),
+    warnPct: WINDOW_WARN_PCT,
+    warned: windowWarned,
+    autoArchive: WINDOW_AUTO_ARCHIVE,
+    archivePct: WINDOW_ARCHIVE_PCT,
+    archiveQueued: windowArchiveQueued,
+    autoArchived: windowAutoArchived,
+    compactions,
+    lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,
+    lastCompactPreTokens: lastCompactPre || null,
+  }),
+});
+registerImportHistoryAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
   store: importHistory,
   maxMessages: IMPORT_SAFE_MAX_MESSAGES,
   maxChars: IMPORT_SAFE_MAX_CHARS,

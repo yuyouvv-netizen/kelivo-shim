@@ -55,7 +55,7 @@
   前缀。普通订阅模型按标准 200K 上下文、约 167K 原生压缩线计算，85% 提醒、
   90% 自动调用 `letter_write` 留一封第一人称续接信；只有模型名显式带 `[1m]` 才按
   扩展窗口处理。PreCompact 的 `safe` 摘要保留诚实兜底；压缩完成后的
-  `SessionStart(compact)` 自动取回全部钉选桶、按 OB 排名浮现的 8 个普通桶与最近三天的
+  `SessionStart(compact)` 自动取回全部钉选桶、按 OB 排名浮现的 10 个普通桶与最近五天的
   续接信，再把它们作为同一个人的记忆续接。不要轻易把 `COMPACT_SUMMARY_MODE` 改成
   `slim`。
 - **窗口进度/验真页**(`window-admin.js`):`/admin/window` 除真实窗口用量外，还展示

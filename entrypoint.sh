@@ -127,6 +127,14 @@ if [ -n "${BIRD_MCP_URL:-}" ]; then
   echo "[entrypoint] toy MCP configured"
 fi
 
+# 云端浏览器 MCP:真实域名和 X-Token 只放在 Zeabur 环境变量里。启动时安全地
+# 合并为 browser 服务并同步回 /persona；配置脚本的日志与错误均不打印秘密。
+if [ -n "${BROWSER_MCP_URL:-}" ] || [ -n "${BROWSER_MCP_TOKEN:-}" ]; then
+  if ! node browser-mcp-config.js; then
+    exit 1
+  fi
+fi
+
 # Claude Code 的 MCP 配置允许给单个服务设置 env；该层会覆盖父进程环境。
 # 旧私有配置若固定过 ~/.gmail-mcp，就会在上面的 /persona 选择之后仍读旧令牌。
 # 把同一对持久卷路径写进 gmail 服务自身的 env，确保所有启动层一致。这里只写

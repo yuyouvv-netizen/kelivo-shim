@@ -1,6 +1,11 @@
 {
   "mcpServers": {
     "你的记忆MCP": { "type": "http", "url": "https://<域名>/mcp" },
+    "browser": {
+      "type": "http",
+      "url": "https://<云端浏览器域名>/mcp",
+      "headers": { "X-Token": "<只放在私有运行环境，不要提交真实值>" }
+    },
     "gmail": { "command": "npx", "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"] }
   }
 }

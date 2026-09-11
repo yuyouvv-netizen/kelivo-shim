@@ -136,12 +136,15 @@ const BASE_SYSTEM_PROMPT = process.env.SOUL_ANCHOR ?? [
 ].join("\n\n");
 
 // 省 token:--tools 只装真用的内置工具(Bash/Edit/Task 等大 schema 全砍,基线立减);
-// MCP 工具(ombre/fish/gmail/toy)不受 --tools 影响,走 mcp-config 照常加载。
+// MCP 工具(ombre/fish/gmail/toy/browser)不受 --tools 影响,走 mcp-config 照常加载。
 const BUILTIN_TOOLS = process.env.BUILTIN_TOOLS ?? "WebSearch,WebFetch";
 const configuredAllowed = (process.env.ALLOWED_TOOLS ||
   ["WebSearch", "WebFetch", "mcp__ombre", "mcp__fish", "mcp__gmail"].join(","))
   .split(",").map((s) => s.trim()).filter(Boolean);
 if (process.env.BIRD_MCP_URL) configuredAllowed.push("mcp__toy");
+if (process.env.BROWSER_MCP_URL && process.env.BROWSER_MCP_TOKEN) {
+  configuredAllowed.push("mcp__browser");
+}
 const ALLOWED = [...new Set(configuredAllowed)].join(",");
 // 压缩后的具体恢复语义只在 SessionStart(compact) 事件中出现，避免常驻系统提示
 // 与 CLAUDE.md 重复。保留环境变量入口，供其他部署自行追加一条短锚点。
@@ -1330,6 +1333,10 @@ app.get("/debug", (_q, r) => r.json({
   attestation: lastAttestation ? { ...lastAttestation, claudeCodeVersion: CLAUDE_CODE_VERSION } : null,
   gmailAuth: gmailAuthDiagnostic,
   bird: birdMcpDiagnostic,
+  browser: {
+    configured: !!(process.env.BROWSER_MCP_URL && process.env.BROWSER_MCP_TOKEN),
+    toolNamespace: "browser",
+  },
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
   window: {

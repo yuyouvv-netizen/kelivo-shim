@@ -32,6 +32,7 @@ async function startServer(t, mode) {
       PORT: String(port),
       CLAUDE_BIN: fakeClaude,
       FAKE_CLAUDE_EMPTY_SUCCESS: mode === "empty" ? "1" : "0",
+      FAKE_CLAUDE_THINKING_EMPTY_SUCCESS: mode === "thinking-empty" ? "1" : "0",
       FAKE_CLAUDE_API_ERROR: mode === "api-error" ? "1" : "0",
       FAKE_CLAUDE_RESULT_ONLY_TEXT: mode === "result-only" ? "1" : "0",
       TURN_STATE_DIR: path.join(dir, "turn-state"),
@@ -51,7 +52,7 @@ async function startServer(t, mode) {
   child.stderr.on("data", (chunk) => { output += chunk; });
   for (let i = 0; i < 100 && !output.includes("kelivo-shim on"); i++) await delay(20);
   assert.match(output, /kelivo-shim on/);
-  return { base: `http://127.0.0.1:${port}`, child };
+  return { base: `http://127.0.0.1:${port}`, child, output: () => output };
 }
 
 async function ask(base) {
@@ -108,6 +109,40 @@ test("a successful result envelope restores text missing from stream events", { 
   assert.equal(debug.attestation.status, "completed");
   assert.equal(debug.attestation.emptyResult, false);
   assert.equal(debug.delivery.currentStatus, "completed");
+
+  child.kill("SIGTERM");
+  await Promise.race([once(child, "exit"), delay(3000)]);
+});
+
+test("thinking with zero final text becomes a visible diagnostic without replay", { timeout: 20_000 }, async (t) => {
+  const { base, child, output } = await startServer(t, "thinking-empty");
+  const body = await ask(base);
+  assert.match(body.content[0].text, /⚠️〔本轮空回〕/);
+  assert.match(body.content[0].text, /达到输出上限/);
+  assert.match(body.content[0].text, /原生会话仍保留/);
+  assert.equal(body.stop_reason, "max_tokens");
+
+  const debug = await fetch(`${base}/debug`).then((response) => response.json());
+  assert.equal(debug.attestation.status, "empty-result");
+  assert.equal(debug.attestation.emptyResult, true);
+  assert.equal(debug.attestation.emptyAfterThinking, true);
+  assert.equal(debug.attestation.stopReason, "max_tokens");
+  assert.equal(debug.attestation.stopReasonSource, "stream");
+  assert.equal(debug.attestation.lastTool, "mcp__browser__x_read_post");
+  assert.equal(debug.attestation.toolCallCount, 1);
+  assert.deepEqual(debug.attestation.tokenUsage, {
+    inputTokens: 420,
+    outputTokens: 64,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 120,
+    thinkingTokens: 64,
+    maxOutputTokens: 64,
+  });
+  assert.equal(debug.delivery.currentStatus, "empty-result");
+  assert.equal(debug.delivery.cachedReplies, 0);
+  assert.match(output(), /\[delivery\] turn finished \{"src":"kelivo"/);
+  assert.match(output(), /"stopReason":"max_tokens"/);
+  assert.match(output(), /"lastTool":"mcp__browser__x_read_post"/);
 
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), delay(3000)]);

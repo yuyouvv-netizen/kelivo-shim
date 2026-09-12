@@ -104,12 +104,12 @@ export function createAnthropicSSE(res, {
         delta: { type: "thinking_delta", thinking },
       });
     },
-    finish(usage) {
+    finish(usage, _fullText, stopReason = "end_turn") {
       if (ended) return false;
       ensureStart(); closeBlock();
       send("message_delta", {
         type: "message_delta",
-        delta: { stop_reason: "end_turn", stop_sequence: null },
+        delta: { stop_reason: stopReason || "end_turn", stop_sequence: null },
         usage: usage || { output_tokens: 0 },
       });
       send("message_stop", { type: "message_stop" });

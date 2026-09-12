@@ -37,3 +37,14 @@ test("a completed turn with no connected phone is reported as undelivered", () =
   phone.connected = false;
   assert.equal(delivery.finish(), false);
 });
+
+test("a late sink receives the original stop reason", () => {
+  const delivery = new ReplayableDelivery();
+  delivery.finish({ output_tokens: 64 }, "诊断提示", "max_tokens");
+  let stopReason = null;
+  delivery.add({
+    text() {},
+    finish(_usage, _fullText, value) { stopReason = value; },
+  });
+  assert.equal(stopReason, "max_tokens");
+});

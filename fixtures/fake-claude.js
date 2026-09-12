@@ -60,6 +60,70 @@ input.on("line", (line) => {
     }), 20);
     return;
   }
+  if (process.env.FAKE_CLAUDE_THINKING_EMPTY_SUCCESS === "1") {
+    setTimeout(() => {
+      send({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { model, usage: { input_tokens: 280, cache_read_input_tokens: 40 } },
+        },
+      });
+      send({
+        type: "stream_event",
+        event: {
+          type: "content_block_start", index: 0,
+          content_block: { type: "tool_use", id: "toolu_x_read", name: "mcp__browser__x_read_post" },
+        },
+      });
+      send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+      send({
+        type: "stream_event",
+        event: { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      });
+      send({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_x_read", content: "post loaded" }],
+        },
+      });
+      send({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { model, usage: { input_tokens: 420, cache_read_input_tokens: 120 } },
+        },
+      });
+      send({
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+      });
+      send({
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "我已经写完，正在交付。" } },
+      });
+      send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+      send({
+        type: "stream_event",
+        event: { type: "message_delta", delta: { stop_reason: "max_tokens" } },
+      });
+      send({
+        type: "result", subtype: "success", is_error: false,
+        api_error_status: null, terminal_reason: "completed", result: "",
+        usage: {
+          input_tokens: 420,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 120,
+          output_tokens: 64,
+        },
+        model_usage: {
+          [model]: { thinkingTokens: 64, maxOutputTokens: 64 },
+        },
+      });
+    }, 20);
+    return;
+  }
   if (process.env.FAKE_CLAUDE_RESULT_ONLY_TEXT === "1") {
     setTimeout(() => {
       send({

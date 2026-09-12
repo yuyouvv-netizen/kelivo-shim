@@ -386,7 +386,8 @@ const turnWatchdog = new TurnWatchdog({
 
 function finishTurnDelivery(stalled, usage, status, replayable) {
   let delivered = false;
-  try { delivered = !!stalled?.sse?.finish(usage, stalled?.fullText || ""); } catch {}
+  const stopReason = stalled?.upstreamStopReason || stalled?.attestation?.stopReason || "end_turn";
+  try { delivered = !!stalled?.sse?.finish(usage, stalled?.fullText || "", stopReason); } catch {}
   if (stalled?.requestKey) {
     inflightTurns.delete(stalled.requestKey);
     turnState.complete({
@@ -398,14 +399,19 @@ function finishTurnDelivery(stalled, usage, status, replayable) {
       status,
     });
   } else turnState.mark(status, { delivered });
-  log("[delivery] turn finished", {
+  log(`[delivery] turn finished ${JSON.stringify({
     src: stalled?.src || "unknown",
     status,
     chars: stalled?.fullText?.length || 0,
     delivered,
     replayable: !!replayable,
     resultFallback: !!stalled?.resultTextFallbackUsed,
-  });
+    stopReason: stalled?.upstreamStopReason || null,
+    stopReasonSource: stalled?.stopReasonSource || null,
+    lastTool: stalled?.lastToolName || null,
+    toolCalls: stalled?.toolCallCount || 0,
+    tokenUsage: stalled?.tokenUsage || null,
+  })}`);
   return delivered;
 }
 
@@ -796,6 +802,50 @@ function usageIsZero(usage) {
   return keys.every((key) => !(Number(usage[key]) > 0));
 }
 
+function finiteTokenCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : null;
+}
+
+function tokenUsageOf(ev) {
+  const usage = ev?.usage && typeof ev.usage === "object" ? ev.usage : {};
+  const modelUsage = ev?.model_usage || ev?.modelUsage;
+  const modelRows = modelUsage && typeof modelUsage === "object"
+    ? Object.values(modelUsage).filter((row) => row && typeof row === "object") : [];
+  const perModelThinking = modelRows
+    .map((row) => finiteTokenCount(row.thinkingTokens ?? row.thinking_tokens))
+    .filter((value) => value !== null);
+  const perModelLimits = modelRows
+    .map((row) => finiteTokenCount(row.maxOutputTokens ?? row.max_output_tokens))
+    .filter((value) => value !== null);
+  const directThinking = finiteTokenCount(
+    usage.thinking_tokens ?? usage.thinkingTokens ??
+    usage.output_tokens_details?.thinking_tokens ?? usage.outputTokensDetails?.thinkingTokens,
+  );
+  return {
+    inputTokens: finiteTokenCount(usage.input_tokens ?? usage.inputTokens),
+    outputTokens: finiteTokenCount(usage.output_tokens ?? usage.outputTokens),
+    cacheCreationInputTokens: finiteTokenCount(
+      usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens,
+    ),
+    cacheReadInputTokens: finiteTokenCount(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens),
+    thinkingTokens: directThinking ?? (perModelThinking.length
+      ? perModelThinking.reduce((sum, value) => sum + value, 0) : null),
+    maxOutputTokens: perModelLimits.length ? Math.max(...perModelLimits) : null,
+  };
+}
+
+function rememberStopReason(activeTurn, value, source) {
+  const stopReason = typeof value === "string" ? value.trim() : "";
+  if (!activeTurn || !stopReason) return;
+  activeTurn.upstreamStopReason = stopReason;
+  activeTurn.stopReasonSource = source;
+  if (activeTurn.attestation) {
+    activeTurn.attestation.stopReason = stopReason;
+    activeTurn.attestation.stopReasonSource = source;
+  }
+}
+
 function appendTurnText(activeTurn, text) {
   if (!activeTurn || !text) return;
   activeTurn.fullText += text;
@@ -809,33 +859,60 @@ function resultFailure(activeTurn, ev) {
     String(ev.api_error_status).trim() !== "";
   const apiErrorStatus = hasApiErrorStatus && Number.isFinite(Number(ev.api_error_status))
     ? Number(ev.api_error_status) : null;
-  const terminalReason = typeof ev.terminal_reason === "string" ? ev.terminal_reason : null;
+  const terminalReasonValue = ev.terminal_reason ?? ev.terminalReason;
+  const terminalReason = typeof terminalReasonValue === "string" ? terminalReasonValue : null;
   const assistantError = activeTurn.assistantError || null;
   const explicitError = ev.is_error === true || subtype !== "success" || !!assistantError ||
     apiErrorStatus !== null || (!!terminalReason && terminalReason !== "completed");
-  const noModelEvidence = !activeTurn.fullText && !activeTurn.assistantTextCandidate &&
-    !activeTurn.attestation?.upstreamModel && !activeTurn.attestation?.thinkingSeen &&
-    !activeTurn.attestation?.signatureSeen && activeTurn.peakPrefix <= 0;
-  const emptyResult = subtype === "success" && !explicitError && noModelEvidence && usageIsZero(ev.usage);
+  const noFinalText = !String(activeTurn.fullText || "").trim() &&
+    !String(activeTurn.assistantTextCandidate || "").trim();
+  const modelEvidence = !!activeTurn.attestation?.upstreamModel || !!activeTurn.thinkingSeen ||
+    !!activeTurn.attestation?.signatureSeen || activeTurn.peakPrefix > 0 || !usageIsZero(ev.usage);
+  const emptyResult = subtype === "success" && !explicitError && noFinalText;
+  const emptyAfterThinking = emptyResult && !!activeTurn.thinkingSeen;
+  const emptyAfterModel = emptyResult && modelEvidence;
+  const stopReasonValue = ev.stop_reason ?? ev.stopReason ?? activeTurn.upstreamStopReason;
+  const stopReason = typeof stopReasonValue === "string" && stopReasonValue.trim()
+    ? stopReasonValue.trim() : null;
+  const tokenUsage = tokenUsageOf(ev);
   const messages = [];
   if (assistantError) messages.push(assistantError);
   if (ev.is_error === true && ev.result) messages.push(ev.result);
   if (Array.isArray(ev.errors)) messages.push(...ev.errors);
-  const errorMessage = diagnosticText(messages) || (emptyResult
-    ? "Claude Code 正常结束了代理循环，但没有进入模型，也没有生成任何 token。"
-    : explicitError ? "Claude Code 上游请求没有正常完成。" : "");
+  const errorMessage = diagnosticText(messages) || (emptyAfterThinking
+    ? "小克已经完成思考，但上游没有生成可发送的正文。"
+    : emptyAfterModel
+      ? "Claude Code 已进入模型，但没有生成可发送的正文。"
+      : emptyResult
+        ? "Claude Code 正常结束了代理循环，但没有进入模型，也没有生成任何 token。"
+        : explicitError ? "Claude Code 上游请求没有正常完成。" : "");
   return {
     failed: explicitError || emptyResult,
     emptyResult,
+    emptyAfterThinking,
+    emptyAfterModel,
     isError: ev.is_error === true,
     apiErrorStatus,
     terminalReason,
-    stopReason: typeof ev.stop_reason === "string" ? ev.stop_reason : null,
+    stopReason,
+    stopReasonSource: stopReason
+      ? ((ev.stop_reason ?? ev.stopReason) ? "result" : activeTurn.stopReasonSource) : null,
+    tokenUsage,
+    lastTool: activeTurn.lastToolName || null,
+    toolCallCount: activeTurn.toolCallCount || 0,
     errorMessage: errorMessage || null,
   };
 }
 
 function failureNotice(receipt) {
+  if (receipt.emptyAfterThinking) {
+    const reason = receipt.stopReason === "max_tokens"
+      ? "小克这一轮已达到输出上限，思考结束后没有留下可发送的正文。"
+      : receipt.stopReason === "model_context_window_exceeded"
+        ? "小克这一轮已碰到上下文上限，思考结束后没有留下可发送的正文。"
+        : "小克已经完成思考，但没有生成可发送的正文。";
+    return `⚠️〔本轮空回〕${reason}原生会话仍保留；若刚调用过工具，请先确认动作是否完成，再决定是否重发。`;
+  }
   const rateLimited = receipt.apiErrorStatus === 429 || receipt.rateLimitStatus === "rejected";
   const authFailed = receipt.apiErrorStatus === 401 || receipt.apiErrorStatus === 403 ||
     /(not logged in|authentication|unauthori[sz]ed|oauth|invalid token|expired token|login required)/i
@@ -900,11 +977,18 @@ function handleEvent(ev, sourceProc = proc) {
         turn.attestation.status = "streaming";
       }
     }
+    if (e.type === "message_delta") rememberStopReason(turn, d.stop_reason ?? d.stopReason, "stream");
     if (e.type === "content_block_start") {
       const cb = e.content_block || {};
       if (cb.type === "tool_use") {
         const toolName = typeof cb.name === "string" ? cb.name : "unknown-tool";
         if (cb.id) turn.toolNames.set(cb.id, toolName);
+        turn.lastToolName = toolName;
+        turn.toolCallCount += 1;
+        if (turn.attestation) {
+          turn.attestation.lastTool = toolName;
+          turn.attestation.toolCallCount = turn.toolCallCount;
+        }
         turn.toolInputs[e.index] = { name: toolName, buf: "" };
         turnState.event("tool_start", { tool: toolName });
       }
@@ -930,6 +1014,7 @@ function handleEvent(ev, sourceProc = proc) {
         turnState.updateResponse(turn.fullText);
       }
       else if (d.type === "thinking_delta") {
+        turn.thinkingSeen = true;
         if (turn.attestation) turn.attestation.thinkingSeen = true;
         turn.sse?.thinking(d.thinking || d.text || "");
       }
@@ -963,6 +1048,11 @@ function handleEvent(ev, sourceProc = proc) {
   }
   if (ev.type === "assistant") {
     touchTurnActivity(turn);
+    rememberStopReason(
+      turn,
+      ev.message?.stop_reason ?? ev.message?.stopReason ?? ev.stop_reason ?? ev.stopReason,
+      "assistant",
+    );
     if (turn.attestation) {
       const upstreamModel = typeof ev.message?.model === "string" ? ev.message.model.trim() : "";
       if (upstreamModel) turn.attestation.upstreamModel = upstreamModel;
@@ -1057,14 +1147,22 @@ function handleEvent(ev, sourceProc = proc) {
         appendTurnText(turn, resultText);
       }
     }
+    rememberStopReason(turn, ev.stop_reason ?? ev.stopReason, "result");
     const failure = resultFailure(turn, ev);
+    turn.tokenUsage = failure.tokenUsage;
     if (turn.attestation) Object.assign(turn.attestation, failure);
     turnState.event("result", {
       subtype: ev.subtype || "success",
       isError: failure.isError,
       apiErrorStatus: failure.apiErrorStatus,
       terminalReason: failure.terminalReason,
+      stopReason: failure.stopReason,
+      stopReasonSource: failure.stopReasonSource,
       emptyResult: failure.emptyResult,
+      emptyAfterThinking: failure.emptyAfterThinking,
+      lastTool: failure.lastTool,
+      toolCallCount: failure.toolCallCount,
+      tokenUsage: failure.tokenUsage,
     });
     if (turn.interruptRequestedAt) {
       clearInterruptGrace(turn);
@@ -1075,13 +1173,17 @@ function handleEvent(ev, sourceProc = proc) {
         turn.sse?.text(warning);
       }
     } else if (failure.failed) {
-      log("[result-error]", {
+      log(`[result-error] ${JSON.stringify({
         subtype: ev.subtype || "success",
         isError: failure.isError,
         apiErrorStatus: failure.apiErrorStatus,
         terminalReason: failure.terminalReason,
+        stopReason: failure.stopReason,
         emptyResult: failure.emptyResult,
-      });
+        emptyAfterThinking: failure.emptyAfterThinking,
+        lastTool: failure.lastTool,
+        tokenUsage: failure.tokenUsage,
+      })}`);
       const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
       if (interactive) appendTurnText(turn, `${turn.fullText ? "\n\n" : ""}${failureNotice(turn.attestation || failure)}`);
     }
@@ -1195,7 +1297,9 @@ function pump() {
     watchdogTimeoutMs,
     item, requestKey: item.requestKey || null,
     toolNames: new Map(), toolInputs: {}, assistantTextCandidate: "", assistantError: null,
-    resultTextFallbackUsed: false,
+    resultTextFallbackUsed: false, thinkingSeen: false,
+    upstreamStopReason: null, stopReasonSource: null,
+    lastToolName: null, toolCallCount: 0, tokenUsage: null,
   };
   if (turn.src === "kelivo") {
     turn.attestation = {
@@ -1215,7 +1319,13 @@ function pump() {
       apiErrorStatus: null,
       terminalReason: null,
       stopReason: null,
+      stopReasonSource: null,
       emptyResult: false,
+      emptyAfterThinking: false,
+      emptyAfterModel: false,
+      lastTool: null,
+      toolCallCount: 0,
+      tokenUsage: null,
       errorMessage: null,
       rateLimitStatus: null,
       rateLimitType: null,
@@ -1261,8 +1371,8 @@ function makeCollector(res, model = spawnedModel) {
   return {
     isConnected() { return !res.headersSent && !res.writableEnded && !res.destroyed; },
     text() {}, thinking() {},
-    finish(usage, fullText) {
-      res.json({ id: "msg_" + randomUUID().replace(/-/g, "").slice(0, 24), type: "message", role: "assistant", model, content: [{ type: "text", text: fullText || "" }], stop_reason: "end_turn", stop_sequence: null, usage: usage || { input_tokens: 0, output_tokens: 0 } });
+    finish(usage, fullText, stopReason = "end_turn") {
+      res.json({ id: "msg_" + randomUUID().replace(/-/g, "").slice(0, 24), type: "message", role: "assistant", model, content: [{ type: "text", text: fullText || "" }], stop_reason: stopReason || "end_turn", stop_sequence: null, usage: usage || { input_tokens: 0, output_tokens: 0 } });
       return true;
     },
   };

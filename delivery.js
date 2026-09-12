@@ -6,6 +6,7 @@ export class ReplayableDelivery {
     this.fullText = "";
     this.finished = false;
     this.usage = undefined;
+    this.stopReason = "end_turn";
     if (sink) this.add(sink);
   }
 
@@ -13,7 +14,7 @@ export class ReplayableDelivery {
     if (!sink) return false;
     if (this.fullText) sink.text?.(this.fullText);
     if (this.finished) {
-      sink.finish?.(this.usage, this.fullText);
+      sink.finish?.(this.usage, this.fullText, this.stopReason);
       return true;
     }
     this.sinks.add(sink);
@@ -37,16 +38,17 @@ export class ReplayableDelivery {
     }
   }
 
-  finish(usage, fullText) {
+  finish(usage, fullText, stopReason = "end_turn") {
     if (this.finished) return false;
     this.finished = true;
     this.usage = usage;
+    this.stopReason = stopReason || "end_turn";
     if (typeof fullText === "string" && !this.fullText) this.fullText = fullText;
     let delivered = false;
     for (const sink of this.sinks) {
       if (sink.isConnected?.() === false) continue;
       try {
-        const result = sink.finish?.(usage, this.fullText);
+        const result = sink.finish?.(usage, this.fullText, this.stopReason);
         if (result !== false) delivered = true;
       } catch {}
     }

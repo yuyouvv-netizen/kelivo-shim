@@ -73,3 +73,13 @@ test("SSE stops writing when the client closes", () => {
   sse.text("不会写入");
   assert.deepEqual(res.chunks, [": connected\n\n"]);
 });
+
+test("SSE forwards the real upstream stop reason", () => {
+  const res = new FakeResponse();
+  const sse = createAnthropicSSE(res, {
+    model: "claude-test",
+    heartbeatMs: 0,
+  });
+  sse.finish({ output_tokens: 64 }, "", "max_tokens");
+  assert.match(res.chunks.join(""), /"stop_reason":"max_tokens"/);
+});

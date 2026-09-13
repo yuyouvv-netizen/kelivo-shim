@@ -71,6 +71,7 @@ import {
   systemPromptArgs,
 } from "./system-prompt.js";
 import { normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
+import { configuredDisallowedTools } from "./tool-policy.js";
 
 // 容器默认 UTC,AI 的「今天」会比新加坡慢 8 小时。统一为新加坡时区,claude 子进程继承。
 process.env.TZ = process.env.TZ || "Asia/Singapore";
@@ -146,6 +147,10 @@ if (process.env.BROWSER_MCP_URL && process.env.BROWSER_MCP_TOKEN) {
   configuredAllowed.push("mcp__browser");
 }
 const ALLOWED = [...new Set(configuredAllowed)].join(",");
+// Exact MCP tool names here are removed from the model's available-tool
+// context. The servers stay connected, so retained tools in the same namespace
+// keep working and the policy remains reversible through DISALLOWED_TOOLS.
+const DISALLOWED = configuredDisallowedTools().join(",");
 // 压缩后的具体恢复语义只在 SessionStart(compact) 事件中出现，避免常驻系统提示
 // 与 CLAUDE.md 重复。保留环境变量入口，供其他部署自行追加一条短锚点。
 const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ?? "";
@@ -550,6 +555,7 @@ function spawnClaude(kelivoSystem, model, effort) {
     "--strict-mcp-config",
     "--permission-mode", "dontAsk",
     "--allowedTools", ALLOWED,
+    ...(DISALLOWED ? ["--disallowedTools", DISALLOWED] : []),
     "--tools", BUILTIN_TOOLS,
   ];
   if (resumeId) args.push("--resume", resumeId);

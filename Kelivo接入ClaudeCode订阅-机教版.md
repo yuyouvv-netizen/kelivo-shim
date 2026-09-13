@@ -490,6 +490,7 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `BIRD_MCP_URL` | (可选)啵啵鸟私密 MCP 地址 | 启动时以 `toy` 服务名接入 Claude Code；只放 Zeabur 环境变量，不提交仓库 |
 | `BROWSER_MCP_URL` | (可选)云端浏览器 MCP 地址 | 必须是 `https://<域名>/mcp`；与 `BROWSER_MCP_TOKEN` 成对设置，启动时以 `browser` 服务名接入 |
 | `BROWSER_MCP_TOKEN` | (可选)云端浏览器的访问令牌 | Claude Code 启动时从 `${BROWSER_MCP_TOKEN}` 引用展开为 `X-Token`；磁盘配置只存引用且权限为 `600`，不存令牌明文 |
+| `STATUS_WRITE_TOKEN` | (可选)给 iPhone 快捷指令单独生成的随机密钥 | 启用 `POST /status`；不要复用 `SHIM_KEY`，不要写进仓库或 URL 查询参数 |
 | `WAKE_IDLE_MIN` | `50` | 自主时间空闲阈值;`WAKE_CHECK_MIN` 为本地检查频率(默认10),实际约50-60分钟触发。默认新加坡时间06:00-24:00,可在手机 `/admin/wake` 热切换全天模式 |
 | `TG_BOT_TOKEN` | (可选)Telegram bot token | 启用 Telegram 前端:与 Kelivo 共用同一常驻进程,收发消息+自主发言直接进 TG 对话(bot 可主动开口,Kelivo 做不到)。@BotFather 创建 |
 | `TG_CHAT_ID` | (可选) | 预设 TG 会话;不设则第一个私聊自动锁定,之后只认这个人 |

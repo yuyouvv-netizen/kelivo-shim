@@ -78,7 +78,7 @@ test("configured browser MCP is reported and allowed even with a custom allowlis
 
   const launch = JSON.parse(fs.readFileSync(argsFile, "utf8").trim());
   assert.deepEqual(flagValue(launch, "--allowedTools").split(","), [
-    "WebFetch", "mcp__ombre", "mcp__browser",
+    "WebFetch", "mcp__ombre", "mcp__status", "mcp__browser",
   ]);
   const disallowed = flagValue(launch, "--disallowedTools").split(",");
   assert.ok(disallowed.includes("mcp__browser__fill_form"));

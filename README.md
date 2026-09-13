@@ -50,6 +50,8 @@
 | `wake-mode.js` | 自主心跳白天/全天模式的私人磁盘持久化与时段判断 |
 | `bird-mcp-diagnostic.js` | 只读验证啵啵鸟 MCP 的初始化与工具清单，不返回私密地址 |
 | `browser-mcp-config.js` | 校验云端浏览器环境变量，只把 `${…}` 引用写入 MCP 配置并将文件权限收紧为 `600` |
+| `status.js` | 又又主动写入的单条临时状态、固定新加坡时间、分级过期和独立鉴权 HTTP 入口 |
+| `status-mcp.js` / `status-mcp-config.js` | 本地无参数 `look` 工具及其开机配置；状态正文不进入 MCP 配置或日志 |
 | `wake-admin.js` | 手机 `/admin/wake` 心跳时段开关,与会话开关同样使用 `SHIM_KEY`、CSRF 和安全 Cookie |
 | `ai-name.js` | Bark 通知标题与 Kelivo 模型显示名的私人磁盘持久化、热更新和输入校验 |
 | `import-history.js` | Claude 官端历史的一次性私有持久化、旧会话指针备份/恢复与原子消费 |
@@ -66,6 +68,8 @@
 | `CLAUDE.md.example` | 人设入口模板,复制成 `CLAUDE.md`,人设本体自己写 |
 
 环境变量清单见机教版 §3.6。
+
+iPhone 状态栏的配置见 [`docs/status-bar-ios.md`](docs/status-bar-ios.md)。
 
 ## ⚠️ 红线
 

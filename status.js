@@ -193,11 +193,29 @@ function requestStatusText(value, depth = 0) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const keys = Object.keys(value);
     const wrapperKey = keys.find((key) =>
-      ["text", "value", "string"].includes(key.toLowerCase()),
+      ["text", "value", "string", "content", "data", "input", "answer"]
+        .includes(key.toLowerCase()),
     );
     if (wrapperKey) return requestStatusText(value[wrapperKey], depth + 1);
+    if (keys.length === 1) return requestStatusText(value[keys[0]], depth + 1);
   }
   throw new TypeError("状态内容必须是文字。");
+}
+
+function requestValueShape(value, depth = 0) {
+  if (typeof value === "string") return "text";
+  if (value === null) return "null";
+  if (depth >= 3) return "nested";
+  if (Array.isArray(value)) {
+    const shapes = value.slice(0, 4).map((item) => requestValueShape(item, depth + 1));
+    return `array(${value.length}:${shapes.join(",")})`;
+  }
+  if (typeof value === "object") {
+    const values = Object.values(value);
+    const shapes = values.slice(0, 4).map((item) => requestValueShape(item, depth + 1));
+    return `object(${values.length}:${shapes.join(",")})`;
+  }
+  return typeof value;
 }
 
 export function registerStatusRoute(app, {
@@ -227,7 +245,14 @@ export function registerStatusRoute(app, {
         timeZone: STATUS_TIME_ZONE,
       });
     } catch (error) {
-      if (error instanceof TypeError || error instanceof RangeError) {
+      if (error instanceof TypeError) {
+        return res.status(400).json({
+          ok: false,
+          error: error.message,
+          receivedShape: requestValueShape(req.body?.text),
+        });
+      }
+      if (error instanceof RangeError) {
         return res.status(400).json({ ok: false, error: error.message });
       }
       log(`[status] persist failed ${error?.message || String(error)}`);

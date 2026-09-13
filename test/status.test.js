@@ -175,6 +175,14 @@ test("the iPhone write endpoint unwraps unambiguous text wrappers", async (t) =>
   assert.equal(singleUnknownWrapper.status, 201);
   assert.equal(f.store.read().text, "沙发 / 灯开着");
 
+  const rootWrapper = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ shortcutValue: "准备睡觉" }),
+  });
+  assert.equal(rootWrapper.status, 201);
+  assert.equal(f.store.read().text, "准备睡觉");
+
   const arbitrary = await fetch(url, {
     method: "POST",
     headers,
@@ -184,9 +192,9 @@ test("the iPhone write endpoint unwraps unambiguous text wrappers", async (t) =>
   assert.deepEqual(await arbitrary.json(), {
     ok: false,
     error: "状态内容必须是文字。",
-    receivedShape: "object(2:text,text)",
+    receivedShape: "object(1:object(2:text,text))",
   });
-  assert.equal(f.store.read().text, "沙发 / 灯开着");
+  assert.equal(f.store.read().text, "准备睡觉");
 });
 
 test("the write endpoint fails closed when its separate token is absent", async (t) => {

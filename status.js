@@ -236,7 +236,10 @@ export function registerStatusRoute(app, {
     next();
   }, json({ limit: "4kb", strict: true }), (req, res) => {
     try {
-      const record = store.write(requestStatusText(req.body?.text));
+      const hasTextField = req.body && typeof req.body === "object" &&
+        !Array.isArray(req.body) && Object.prototype.hasOwnProperty.call(req.body, "text");
+      const submitted = hasTextField ? req.body.text : req.body;
+      const record = store.write(requestStatusText(submitted));
       log(`[status] updated chars=${codePointLength(record.text)}`);
       return res.status(201).json({
         ok: true,
@@ -249,7 +252,7 @@ export function registerStatusRoute(app, {
         return res.status(400).json({
           ok: false,
           error: error.message,
-          receivedShape: requestValueShape(req.body?.text),
+          receivedShape: requestValueShape(req.body),
         });
       }
       if (error instanceof RangeError) {

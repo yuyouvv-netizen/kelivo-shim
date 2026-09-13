@@ -110,6 +110,14 @@ if ! node status-mcp-config.js; then
   exit 1
 fi
 
+# Claude Code 2.1.239 会把项目 .mcp.json 里新出现的服务标记为待批准；这里是
+# 无交互启动，不能弹确认框，因此必须在 settings.json 中精确批准 status。
+# 只合并这一项，保留原有 Claude 设置和其他 MCP 的启停选择。
+if ! node status-mcp-approval.js; then
+  exit 1
+fi
+export STATUS_MCP_APPROVAL_CONFIGURED=1
+
 # 啵啵鸟 MCP:真实 URL(含私密路径)只放在 Zeabur 的 BIRD_MCP_URL 环境变量里。
 # 启动时合并进运行配置,并同步回 /persona 保险箱;日志不打印 URL。
 if [ -n "${BIRD_MCP_URL:-}" ]; then

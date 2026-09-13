@@ -141,7 +141,7 @@ test("the iPhone write endpoint is separately authenticated and does not expose 
   assert.equal(f.store.read().text, "到家了");
 });
 
-test("the iPhone write endpoint unwraps only narrow text wrappers", async (t) => {
+test("the iPhone write endpoint unwraps unambiguous text wrappers", async (t) => {
   const f = fixture(t);
   const app = express();
   registerStatusRoute(app, {
@@ -167,13 +167,26 @@ test("the iPhone write endpoint unwraps only narrow text wrappers", async (t) =>
   assert.equal(wrapped.status, 201);
   assert.equal(f.store.read().text, "GPT / 到家了");
 
+  const singleUnknownWrapper = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ text: { shortcutItem: "沙发 / 灯开着" } }),
+  });
+  assert.equal(singleUnknownWrapper.status, 201);
+  assert.equal(f.store.read().text, "沙发 / 灯开着");
+
   const arbitrary = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({ text: { unrelated: "不会写入" } }),
+    body: JSON.stringify({ text: { first: "不会", second: "写入" } }),
   });
   assert.equal(arbitrary.status, 400);
-  assert.equal(f.store.read().text, "GPT / 到家了");
+  assert.deepEqual(await arbitrary.json(), {
+    ok: false,
+    error: "状态内容必须是文字。",
+    receivedShape: "object(2:text,text)",
+  });
+  assert.equal(f.store.read().text, "沙发 / 灯开着");
 });
 
 test("the write endpoint fails closed when its separate token is absent", async (t) => {

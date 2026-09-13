@@ -141,6 +141,41 @@ test("the iPhone write endpoint is separately authenticated and does not expose 
   assert.equal(f.store.read().text, "到家了");
 });
 
+test("the iPhone write endpoint unwraps only narrow text wrappers", async (t) => {
+  const f = fixture(t);
+  const app = express();
+  registerStatusRoute(app, {
+    store: f.store,
+    writeToken: "shortcut-secret",
+    json: express.json,
+  });
+  const server = http.createServer(app);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/status`;
+  const headers = {
+    "Authorization": "Bearer shortcut-secret",
+    "Content-Type": "application/json",
+  };
+
+  const wrapped = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ text: { text: ["GPT / 到家了"] } }),
+  });
+  assert.equal(wrapped.status, 201);
+  assert.equal(f.store.read().text, "GPT / 到家了");
+
+  const arbitrary = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ text: { unrelated: "不会写入" } }),
+  });
+  assert.equal(arbitrary.status, 400);
+  assert.equal(f.store.read().text, "GPT / 到家了");
+});
+
 test("the write endpoint fails closed when its separate token is absent", async (t) => {
   const f = fixture(t);
   const app = express();

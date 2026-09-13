@@ -180,6 +180,26 @@ function sameSecret(actual, expected) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+function requestStatusText(value, depth = 0) {
+  if (typeof value === "string") return value;
+  if (depth >= 3) throw new TypeError("状态内容必须是文字。");
+
+  // Shortcuts can preserve a single text value as a one-item content wrapper
+  // when it is inserted into a JSON field. Unwrap only the narrow shapes we
+  // expect instead of coercing arbitrary objects to strings.
+  if (Array.isArray(value) && value.length === 1) {
+    return requestStatusText(value[0], depth + 1);
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const keys = Object.keys(value);
+    const wrapperKey = keys.find((key) =>
+      ["text", "value", "string"].includes(key.toLowerCase()),
+    );
+    if (wrapperKey) return requestStatusText(value[wrapperKey], depth + 1);
+  }
+  throw new TypeError("状态内容必须是文字。");
+}
+
 export function registerStatusRoute(app, {
   store,
   writeToken,
@@ -198,7 +218,7 @@ export function registerStatusRoute(app, {
     next();
   }, json({ limit: "4kb", strict: true }), (req, res) => {
     try {
-      const record = store.write(req.body?.text);
+      const record = store.write(requestStatusText(req.body?.text));
       log(`[status] updated chars=${codePointLength(record.text)}`);
       return res.status(201).json({
         ok: true,

@@ -72,6 +72,12 @@ import {
 } from "./system-prompt.js";
 import { normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
 import { configuredDisallowedTools } from "./tool-policy.js";
+import {
+  DEFAULT_STATUS_FILE,
+  registerStatusRoute,
+  StatusStore,
+  STATUS_TIME_ZONE,
+} from "./status.js";
 
 // 容器默认 UTC,AI 的「今天」会比新加坡慢 8 小时。统一为新加坡时区,claude 子进程继承。
 process.env.TZ = process.env.TZ || "Asia/Singapore";
@@ -116,6 +122,8 @@ const SESSION_BACKUPS = Math.max(0, Math.min(10, +(process.env.SESSION_BACKUPS |
 const SESSION_BACKUP_DIR = process.env.SESSION_BACKUP_DIR || "/persona/claude-state/backups";
 const CLAUDE_CONFIG_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || "/root", ".claude");
 const WAKE_MODE_FILE = process.env.WAKE_MODE_FILE || "/persona/wake-mode.json";
+const STATUS_FILE = process.env.STATUS_FILE || DEFAULT_STATUS_FILE;
+const STATUS_WRITE_TOKEN = String(process.env.STATUS_WRITE_TOKEN || "").trim();
 // 默认保留 Claude Code 原生提示,再追加私人提示。若原生工程代理气质过重,
 // Zeabur 临时设 CLAUDE_SYSTEM_PROMPT_MODE=replace 并重新启动即可回退。
 const SYSTEM_PROMPT_MODE = normalizeSystemPromptMode(process.env.CLAUDE_SYSTEM_PROMPT_MODE);
@@ -142,6 +150,7 @@ const BUILTIN_TOOLS = process.env.BUILTIN_TOOLS ?? "WebSearch,WebFetch";
 const configuredAllowed = (process.env.ALLOWED_TOOLS ||
   ["WebSearch", "WebFetch", "mcp__ombre", "mcp__fish", "mcp__gmail"].join(","))
   .split(",").map((s) => s.trim()).filter(Boolean);
+configuredAllowed.push("mcp__status");
 if (process.env.BIRD_MCP_URL) configuredAllowed.push("mcp__toy");
 if (process.env.BROWSER_MCP_URL && process.env.BROWSER_MCP_TOKEN) {
   configuredAllowed.push("mcp__browser");
@@ -156,6 +165,7 @@ const DISALLOWED = configuredDisallowedTools().join(",");
 const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ?? "";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+const statusStore = new StatusStore({ file: STATUS_FILE });
 const wakeMode = new WakeModeStore({
   file: WAKE_MODE_FILE,
   defaultMode: process.env.WAKE_MODE_DEFAULT,
@@ -1289,6 +1299,12 @@ function extractImages(messages) {
 }
 
 const app = express();
+registerStatusRoute(app, {
+  store: statusStore,
+  writeToken: STATUS_WRITE_TOKEN,
+  json: express.json,
+  log,
+});
 app.use(express.json({ limit: "100mb" }));
 registerClaudeOauthAdmin(app, {
   shimKey: SHIM_KEY, claudeBin: CLAUDE_BIN, urlencoded: express.urlencoded, log,
@@ -1369,6 +1385,11 @@ app.get("/debug", (_q, r) => r.json({
   browser: {
     configured: !!(process.env.BROWSER_MCP_URL && process.env.BROWSER_MCP_TOKEN),
     toolNamespace: "browser",
+  },
+  status: {
+    writeConfigured: !!STATUS_WRITE_TOKEN,
+    toolNamespace: "status",
+    timeZone: STATUS_TIME_ZONE,
   },
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },

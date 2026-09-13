@@ -104,6 +104,12 @@ if [ ! -f .mcp.json ]; then
 JSON
 fi
 
+# 状态栏 MCP 在本容器内走 stdio，只暴露无参数 look 工具。状态正文保存在
+# /persona 私有卷，不写进 MCP 配置、日志或仓库；配置会同步回保险箱以便重建恢复。
+if ! node status-mcp-config.js; then
+  exit 1
+fi
+
 # 啵啵鸟 MCP:真实 URL(含私密路径)只放在 Zeabur 的 BIRD_MCP_URL 环境变量里。
 # 启动时合并进运行配置,并同步回 /persona 保险箱;日志不打印 URL。
 if [ -n "${BIRD_MCP_URL:-}" ]; then

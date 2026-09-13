@@ -80,6 +80,12 @@ test("configured browser MCP is reported and allowed even with a custom allowlis
   assert.deepEqual(flagValue(launch, "--allowedTools").split(","), [
     "WebFetch", "mcp__ombre", "mcp__browser",
   ]);
+  const disallowed = flagValue(launch, "--disallowedTools").split(",");
+  assert.ok(disallowed.includes("mcp__browser__fill_form"));
+  assert.ok(disallowed.includes("mcp__browser__close_page"));
+  assert.ok(!disallowed.includes("mcp__browser__handle_dialog"));
+  assert.ok(!disallowed.includes("mcp__browser__type_text"));
+  assert.ok(!disallowed.some((name) => name.startsWith("mcp__browser__x_")));
 
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), delay(3000)]);

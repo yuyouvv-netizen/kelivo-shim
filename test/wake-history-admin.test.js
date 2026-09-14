@@ -63,4 +63,6 @@ test("wake history page requires SHIM_KEY and reveals only short tool names", as
   assert.doesNotMatch(html, /mcp__browser__/);
   assert.doesNotMatch(html, /not-recorded/);
   assert.match(html, /不会给小克发送消息/);
+  assert.match(html, /只在打开或点击“立即刷新”时读取一次/);
+  assert.doesNotMatch(html, /http-equiv=["']refresh/i);
 });

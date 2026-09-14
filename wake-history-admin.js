@@ -61,11 +61,8 @@ function statusTone(status) {
   return "warn";
 }
 
-function page(title, body, refreshSeconds = 0) {
-  const refresh = refreshSeconds > 0
-    ? `<meta http-equiv="refresh" content="${Math.round(refreshSeconds)}">`
-    : "";
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">${refresh}
+function page(title, body) {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${escapeHtml(title)}</title><style>
 :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -106,8 +103,8 @@ export function wakeHistoryPage(runs = []) {
 <p class="muted">只显示最近 3 轮实际心跳及其工具名称，不保存参数、结果、聊天正文或思考过程。</p>
 ${body}
 <a class="refresh" href="${BASE_PATH}">立即刷新</a>
-<p class="muted">页面每 15 秒自动刷新。查看记录不会给小克发送消息、触发心跳或占用上下文。</p>
-<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/window">窗口进度</a><a href="/admin/session">全新会话</a></p>`, 15);
+<p class="muted">页面只在打开或点击“立即刷新”时读取一次。查看记录不会给小克发送消息、触发心跳或占用上下文。</p>
+<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/window">窗口进度</a><a href="/admin/session">全新会话</a></p>`);
 }
 
 export function registerWakeHistoryAdmin(app, {

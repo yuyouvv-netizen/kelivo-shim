@@ -202,7 +202,7 @@ ${barkNamePanel(status, session, editName, message, isError)}
 <p>当前进程内已压缩：<strong>${compactCount} 次</strong><br>上次压缩（新加坡时间）：<strong>${escapeHtml(singaporeTime(status.lastCompactAt))}</strong>${status.lastCompactPreTokens ? `<br>上次压缩前：<strong>${tokenK(status.lastCompactPreTokens)}</strong>` : ""}</p>
 <a class="refresh" href="${BASE_PATH}">立即刷新</a>
 <p class="muted">${editName ? "修改名字时已暂停自动刷新。" : "页面每 15 秒自动刷新。"}进度读取不会给小克发送消息、触发心跳、写 Letter、重启或压缩。</p>
-<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/session">全新会话</a></p>`, editName ? 0 : 15);
+<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/wake-history">心跳记录</a><a href="/admin/session">全新会话</a></p>`, editName ? 0 : 15);
 }
 
 export function registerWindowAdmin(app, {

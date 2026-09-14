@@ -112,6 +112,29 @@ input.on("line", (line) => {
       send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
       textIndex = 1;
     }
+    const fakeTools = String(process.env.FAKE_CLAUDE_TOOLS || "")
+      .split(",").map((value) => value.trim()).filter(Boolean);
+    for (const [offset, toolName] of fakeTools.entries()) {
+      const index = textIndex + offset;
+      send({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index,
+          content_block: { type: "tool_use", id: `tool-${offset}`, name: toolName, input: {} },
+        },
+      });
+      send({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index,
+          delta: { type: "input_json_delta", partial_json: "{\"private\":\"not-recorded\"}" },
+        },
+      });
+      send({ type: "stream_event", event: { type: "content_block_stop", index } });
+    }
+    textIndex += fakeTools.length;
     send({
       type: "stream_event",
       event: { type: "content_block_start", index: textIndex, content_block: { type: "text", text: "" } },

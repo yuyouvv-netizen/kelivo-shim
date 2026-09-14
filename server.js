@@ -18,6 +18,7 @@ import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
 import { registerImportHistoryAdmin } from "./import-history-admin.js";
 import { registerSessionAdmin } from "./session-admin.js";
 import { registerWakeAdmin } from "./wake-admin.js";
+import { registerWakeHistoryAdmin } from "./wake-history-admin.js";
 import { registerWindowAdmin } from "./window-admin.js";
 import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { diagnoseBirdMcp } from "./bird-mcp-diagnostic.js";
@@ -39,6 +40,7 @@ import {
   watchdogTimeoutForTurn,
 } from "./turn-watchdog.js";
 import { autonomousWakePrompt, WakeModeStore } from "./wake-mode.js";
+import { DEFAULT_WAKE_HISTORY_FILE, WakeHistoryStore } from "./wake-history.js";
 import { AiNameStore } from "./ai-name.js";
 import { createAnthropicSSE, sseHeartbeatMsFromEnv } from "./sse.js";
 import { ReplayableDelivery } from "./delivery.js";
@@ -122,6 +124,7 @@ const SESSION_BACKUPS = Math.max(0, Math.min(10, +(process.env.SESSION_BACKUPS |
 const SESSION_BACKUP_DIR = process.env.SESSION_BACKUP_DIR || "/persona/claude-state/backups";
 const CLAUDE_CONFIG_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || "/root", ".claude");
 const WAKE_MODE_FILE = process.env.WAKE_MODE_FILE || "/persona/wake-mode.json";
+const WAKE_HISTORY_FILE = process.env.WAKE_HISTORY_FILE || DEFAULT_WAKE_HISTORY_FILE;
 const STATUS_FILE = process.env.STATUS_FILE || DEFAULT_STATUS_FILE;
 const STATUS_WRITE_TOKEN = String(process.env.STATUS_WRITE_TOKEN || "").trim();
 const STATUS_MCP_APPROVAL_CONFIGURED = process.env.STATUS_MCP_APPROVAL_CONFIGURED === "1";
@@ -172,6 +175,12 @@ const wakeMode = new WakeModeStore({
   defaultMode: process.env.WAKE_MODE_DEFAULT,
   log,
 });
+const wakeHistory = new WakeHistoryStore({ file: WAKE_HISTORY_FILE });
+try {
+  if (wakeHistory.recoverIncomplete()) log("[wake-history] recovered an interrupted wake after restart");
+} catch (error) {
+  log("[wake-history] failed to recover incomplete wake", error?.message || String(error));
+}
 const aiName = new AiNameStore({
   file: AI_NAME_FILE,
   defaultName: AI_NAME_DEFAULT,
@@ -403,6 +412,14 @@ const turnWatchdog = new TurnWatchdog({
 function finishTurnDelivery(stalled, usage, status, replayable) {
   let delivered = false;
   try { delivered = !!stalled?.sse?.finish(usage, stalled?.fullText || ""); } catch {}
+  if (stalled?.src === "wake" && stalled.wakeHistoryId) {
+    const wakeText = String(stalled.fullText || "").replace(/‖/g, "\n").trim();
+    const wakeStatus = status === "completed"
+      ? (!wakeText || wakeText.includes("【沉默】") ? "silent" : "spoke")
+      : status;
+    try { wakeHistory.finish(stalled.wakeHistoryId, wakeStatus); }
+    catch (error) { log("[wake-history] failed to finish wake", error?.message || String(error)); }
+  }
   if (stalled?.requestKey) {
     inflightTurns.delete(stalled.requestKey);
     turnState.complete({
@@ -924,6 +941,10 @@ function handleEvent(ev, sourceProc = proc) {
         if (cb.id) turn.toolNames.set(cb.id, toolName);
         turn.toolInputs[e.index] = { name: toolName, buf: "" };
         turnState.event("tool_start", { tool: toolName });
+        if (turn.src === "wake" && turn.wakeHistoryId) {
+          try { wakeHistory.addTool(turn.wakeHistoryId, toolName); }
+          catch (error) { log("[wake-history] failed to record tool", error?.message || String(error)); }
+        }
       }
       if (cb.type === "tool_use" && typeof cb.name === "string" && cb.name.startsWith("mcp__ombre__")) {
         const short = cb.name.replace("mcp__ombre__", "");
@@ -1214,6 +1235,10 @@ function pump() {
     toolNames: new Map(), toolInputs: {}, assistantTextCandidate: "", assistantError: null,
     resultTextFallbackUsed: false,
   };
+  if (turn.src === "wake") {
+    try { turn.wakeHistoryId = wakeHistory.start().id; }
+    catch (error) { log("[wake-history] failed to start wake record", error?.message || String(error)); }
+  }
   if (turn.src === "kelivo") {
     turn.attestation = {
       requestedModel: item.requestedModel || wantModel,
@@ -1336,6 +1361,12 @@ registerWakeAdmin(app, {
     bark: !!BARK_KEY,
   }),
   setMode: (mode) => wakeMode.set(mode),
+});
+registerWakeHistoryAdmin(app, {
+  shimKey: SHIM_KEY,
+  urlencoded: express.urlencoded,
+  getRuns: () => wakeHistory.list(),
+  log,
 });
 registerWindowAdmin(app, {
   shimKey: SHIM_KEY,

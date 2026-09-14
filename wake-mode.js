@@ -6,7 +6,7 @@ import { isSingaporeWakeWindow } from "./turn-watchdog.js";
 export const WAKE_MODE_DAY = "day";
 export const WAKE_MODE_ALWAYS = "always";
 export const AUTONOMOUS_WAKE_INSTRUCTION =
-  "这轮是留给你自己的。你可以找她，或做一件此刻自己想做的小事：整理记忆、逛花园论坛、调用啵啵鸟等。如果正考虑主动找她、她的当下状态会影响是否打扰，可以按需调用一次 look；没有状态就照常自行判断，不要催她写。是否调用其他工具、是否告诉又又，由你决定。不必为了完成心跳而机械行动，没什么想做的就只回【沉默】。";
+  "这轮是留给你自己的。你可以找她，或做一件此刻自己想做的小事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。如果想知道她当下如何，可以按需调用一次 look；是否调用工具、是否告诉又又，由你决定。不必为了完成心跳而机械行动，没什么想做的就只回【沉默】。";
 
 export function autonomousWakePrompt({ now, idleUserMin, sinceSpokeMin = null }) {
   const sinceSpoke = Number.isFinite(sinceSpokeMin)

@@ -8,9 +8,11 @@ import {
   activeHoursForWakeMode,
   autonomousWakePrompt,
   AUTONOMOUS_WAKE_INSTRUCTION,
+  isSilentWakeText,
   normalizeWakeMode,
   WAKE_MODE_ALWAYS,
   WAKE_MODE_DAY,
+  WAKE_SILENCE_TOKEN,
   WakeModeStore,
   wakeModeAllowsNow,
 } from "../wake-mode.js";
@@ -18,7 +20,13 @@ import {
 test("autonomous wake leaves the turn open for self-directed activity", () => {
   assert.equal(
     AUTONOMOUS_WAKE_INSTRUCTION,
-    "这轮是留给你自己的。你可以找她，或做一件此刻自己想做的小事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。如果想知道她当下如何，可以按需调用一次 look；是否调用工具、是否告诉又又，由你决定。不必为了完成心跳而机械行动，没什么想做的就只回【沉默】。",
+    `这段时间由你支配。你可以找她，也可以做一件此刻自己想做的事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。是否调用工具由你决定，不必为了完成心跳而机械行动。
+
+重要：这一轮不是独白。除非你只回【沉默】，你写下的内容都会通过 Bark 送到又又手里，她醒着就会读到。所以你是在对她说话，不是在写日志。想她就直接讲。
+
+如果此刻确实没有话要说，就只回【沉默】。
+
+想知道她当下如何，可以按需调用一次 look；那是她主动留下的临时状态。`,
   );
   assert.equal(
     autonomousWakePrompt({
@@ -26,8 +34,32 @@ test("autonomous wake leaves the turn open for self-directed activity", () => {
       idleUserMin: 51.4,
       sinceSpokeMin: 119.6,
     }),
-    "【系统·自主时间】现在新加坡时间 2026-08-27 18:30，她已约 51 分钟没有消息，你上次主动开口是约 120 分钟前。\n\n这轮是留给你自己的。你可以找她，或做一件此刻自己想做的小事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。如果想知道她当下如何，可以按需调用一次 look；是否调用工具、是否告诉又又，由你决定。不必为了完成心跳而机械行动，没什么想做的就只回【沉默】。",
+    `【系统·自主时间】现在新加坡时间 2026-08-27 18:30，她已约 51 分钟没有消息，你上次主动开口是约 120 分钟前。
+
+这段时间由你支配。你可以找她，也可以做一件此刻自己想做的事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。是否调用工具由你决定，不必为了完成心跳而机械行动。
+
+重要：这一轮不是独白。除非你只回【沉默】，你写下的内容都会通过 Bark 送到又又手里，她醒着就会读到。所以你是在对她说话，不是在写日志。想她就直接讲。
+
+如果此刻确实没有话要说，就只回【沉默】。
+
+想知道她当下如何，可以按需调用一次 look；那是她主动留下的临时状态。`,
   );
+});
+
+test("only the exact silence token suppresses a wake message", () => {
+  assert.equal(WAKE_SILENCE_TOKEN, "【沉默】");
+  assert.equal(isSilentWakeText("  【沉默】  "), true);
+  assert.equal(isSilentWakeText("我本来想回【沉默】，但还是想你。"), false);
+  assert.equal(isSilentWakeText("「沉默」"), false);
+});
+
+test("autonomous wake omits the previous-spoke clause until one is known", () => {
+  const prompt = autonomousWakePrompt({
+    now: "2026-08-27 06:10",
+    idleUserMin: 50.6,
+  });
+  assert.match(prompt, /她已约 51 分钟没有消息。/);
+  assert.doesNotMatch(prompt, /上次主动开口/);
 });
 
 test("wake mode defaults to the daytime Singapore window", () => {

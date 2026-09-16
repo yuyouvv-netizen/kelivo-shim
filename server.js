@@ -39,7 +39,7 @@ import {
   turnTimeoutMsFromEnv,
   watchdogTimeoutForTurn,
 } from "./turn-watchdog.js";
-import { autonomousWakePrompt, WakeModeStore } from "./wake-mode.js";
+import { autonomousWakePrompt, isSilentWakeText, WakeModeStore } from "./wake-mode.js";
 import { DEFAULT_WAKE_HISTORY_FILE, WakeHistoryStore } from "./wake-history.js";
 import { AiNameStore } from "./ai-name.js";
 import { createAnthropicSSE, sseHeartbeatMsFromEnv } from "./sse.js";
@@ -415,7 +415,7 @@ function finishTurnDelivery(stalled, usage, status, replayable) {
   if (stalled?.src === "wake" && stalled.wakeHistoryId) {
     const wakeText = String(stalled.fullText || "").replace(/‖/g, "\n").trim();
     const wakeStatus = status === "completed"
-      ? (!wakeText || wakeText.includes("【沉默】") ? "silent" : "spoke")
+      ? (!wakeText || isSilentWakeText(wakeText) ? "silent" : "spoke")
       : status;
     try { wakeHistory.finish(stalled.wakeHistoryId, wakeStatus); }
     catch (error) { log("[wake-history] failed to finish wake", error?.message || String(error)); }
@@ -1522,7 +1522,7 @@ function wakeTurn(idleUserMin) {
     text() {}, thinking() {},
     finish(_u, fullText) {
       const t = (fullText || "").replace(/‖/g, "\n").trim();
-      if (!t || t.includes("【沉默】")) { log("[wake] silent"); return; }
+      if (!t || isSilentWakeText(t)) { log("[wake] silent"); return; }
       lastSpokeAt = Date.now();
       if (canTg) tgSendReply(t).catch((e) => log("[tg-err]", e.message));
       else if (BARK_KEY) barkPush(t).catch((e) => log("[bark-err]", e.message));

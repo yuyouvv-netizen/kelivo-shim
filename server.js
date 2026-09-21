@@ -75,6 +75,11 @@ import {
 import { normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
 import { configuredDisallowedTools } from "./tool-policy.js";
 import {
+  StopSequenceStateStore,
+  stopSequenceFromEnv,
+  withStopSequenceExtraBody,
+} from "./stop-sequence.js";
+import {
   DEFAULT_STATUS_FILE,
   registerStatusRoute,
   StatusStore,
@@ -127,6 +132,9 @@ const WAKE_MODE_FILE = process.env.WAKE_MODE_FILE || "/persona/wake-mode.json";
 const WAKE_HISTORY_FILE = process.env.WAKE_HISTORY_FILE || DEFAULT_WAKE_HISTORY_FILE;
 const STATUS_FILE = process.env.STATUS_FILE || DEFAULT_STATUS_FILE;
 const STATUS_WRITE_TOKEN = String(process.env.STATUS_WRITE_TOKEN || "").trim();
+const STOP_SEQUENCE = stopSequenceFromEnv(process.env.CLAUDE_STOP_SEQUENCE);
+const STOP_SEQUENCE_STATE_FILE = process.env.STOP_SEQUENCE_STATE_FILE ||
+  "/persona/claude-state/stop-sequence.json";
 const STATUS_MCP_APPROVAL_CONFIGURED = process.env.STATUS_MCP_APPROVAL_CONFIGURED === "1";
 // 默认保留 Claude Code 原生提示,再追加私人提示。若原生工程代理气质过重,
 // Zeabur 临时设 CLAUDE_SYSTEM_PROMPT_MODE=replace 并重新启动即可回退。
@@ -170,6 +178,7 @@ const MEMORY_CONTINUITY_RULE = process.env.MEMORY_CONTINUITY_RULE ?? "";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const statusStore = new StatusStore({ file: STATUS_FILE });
+const stopSequenceState = new StopSequenceStateStore({ file: STOP_SEQUENCE_STATE_FILE, log });
 const wakeMode = new WakeModeStore({
   file: WAKE_MODE_FILE,
   defaultMode: process.env.WAKE_MODE_DEFAULT,
@@ -601,6 +610,20 @@ function spawnClaude(kelivoSystem, model, effort) {
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
   }
+  if (STOP_SEQUENCE) {
+    try {
+      env.CLAUDE_CODE_EXTRA_BODY = withStopSequenceExtraBody(
+        env.CLAUDE_CODE_EXTRA_BODY,
+        STOP_SEQUENCE,
+      );
+    } catch (error) {
+      // A broken pre-existing EXTRA_BODY should not disable the guard. Keep the
+      // child request valid and make the fallback visible only in server logs.
+      env.CLAUDE_CODE_EXTRA_BODY = JSON.stringify({ stop_sequences: [STOP_SEQUENCE] });
+      log("[stop-sequence] invalid CLAUDE_CODE_EXTRA_BODY; replaced with guard only",
+        error?.message || String(error));
+    }
+  }
   env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(activeAutoCompactWindow);
   windowTokens = 0;
   if (resumeId) restoreWindowThresholdState(plannedSessionId, true);
@@ -864,7 +887,7 @@ function resultFailure(activeTurn, ev) {
     isError: ev.is_error === true,
     apiErrorStatus,
     terminalReason,
-    stopReason: typeof ev.stop_reason === "string" ? ev.stop_reason : null,
+    stopReason: typeof ev.stop_reason === "string" ? ev.stop_reason : activeTurn.upstreamStopReason || null,
     errorMessage: errorMessage || null,
   };
 }
@@ -925,6 +948,9 @@ function handleEvent(ev, sourceProc = proc) {
   if (ev.type === "stream_event") {
     touchTurnActivity(turn);
     const e = ev.event || {}, d = e.delta || {};
+    if (e.type === "message_delta" && typeof d.stop_reason === "string") {
+      turn.upstreamStopReason = d.stop_reason;
+    }
     if (e.type === "message_start") {
       const prefix = prefixFromMessageStart(e);
       if (prefix > turn.peakPrefix) turn.peakPrefix = prefix;
@@ -1001,6 +1027,9 @@ function handleEvent(ev, sourceProc = proc) {
   }
   if (ev.type === "assistant") {
     touchTurnActivity(turn);
+    if (typeof ev.message?.stop_reason === "string") {
+      turn.upstreamStopReason = ev.message.stop_reason;
+    }
     if (turn.attestation) {
       const upstreamModel = typeof ev.message?.model === "string" ? ev.message.model.trim() : "";
       if (upstreamModel) turn.attestation.upstreamModel = upstreamModel;
@@ -1096,6 +1125,15 @@ function handleEvent(ev, sourceProc = proc) {
       }
     }
     const failure = resultFailure(turn, ev);
+    if (failure.stopReason === "stop_sequence") {
+      const sessionId = currentWindowSessionId();
+      const hit = stopSequenceState.recordHit(sessionId);
+      log("[stop-sequence] blocked generated user continuation", {
+        session: sessionId ? sessionId.slice(-8) : null,
+        count: hit.count,
+        persisted: hit.persisted,
+      });
+    }
     if (turn.attestation) Object.assign(turn.attestation, failure);
     turnState.event("result", {
       subtype: ev.subtype || "success",
@@ -1103,6 +1141,7 @@ function handleEvent(ev, sourceProc = proc) {
       apiErrorStatus: failure.apiErrorStatus,
       terminalReason: failure.terminalReason,
       emptyResult: failure.emptyResult,
+      stopReason: failure.stopReason,
     });
     if (turn.interruptRequestedAt) {
       clearInterruptGrace(turn);
@@ -1233,7 +1272,7 @@ function pump() {
     watchdogTimeoutMs,
     item, requestKey: item.requestKey || null,
     toolNames: new Map(), toolInputs: {}, assistantTextCandidate: "", assistantError: null,
-    resultTextFallbackUsed: false,
+    resultTextFallbackUsed: false, upstreamStopReason: null,
   };
   if (turn.src === "wake") {
     try { turn.wakeHistoryId = wakeHistory.start().id; }
@@ -1393,6 +1432,11 @@ registerWindowAdmin(app, {
     compactions,
     lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,
     lastCompactPreTokens: lastCompactPre || null,
+    stopSequence: {
+      enabled: !!STOP_SEQUENCE,
+      sequence: STOP_SEQUENCE,
+      ...stopSequenceState.forSession(currentWindowSessionId()),
+    },
   }),
 });
 registerImportHistoryAdmin(app, {
@@ -1427,6 +1471,11 @@ app.get("/debug", (_q, r) => r.json({
   },
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
+  stopSequence: {
+    enabled: !!STOP_SEQUENCE,
+    sequence: STOP_SEQUENCE,
+    ...stopSequenceState.forSession(currentWindowSessionId()),
+  },
   window: {
     tokens: windowTokens, limit: activeWindowLimit, pct: windowPct(windowTokens, activeWindowLimit),
     autoCompactWindow: activeAutoCompactWindow,

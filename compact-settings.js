@@ -45,6 +45,15 @@ export function buildCompactSettings({
         {
           type: "mcp_tool",
           server: memoryServer,
+          tool: "I",
+          // 压缩恢复专用：各 aspect 最新一条优先，再按时间补入；
+          // 2500-token 独立预算由 OB 保证，不占普通 breath 的十条配额。
+          input: { read: true, surface: true },
+          timeout: 30,
+        },
+        {
+          type: "mcp_tool",
+          server: memoryServer,
           tool: "letter_read",
           input: {
             query: RECENT_LETTER_QUERY,

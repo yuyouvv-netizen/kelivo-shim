@@ -10,7 +10,7 @@ import {
 import { compactInstructions } from "../compact-prompts.js";
 import { COMPACT_RECOVERY_CONTEXT } from "../compact-recovery-text.js";
 
-test("压缩后由 hook 自动取回钉选桶、十个普通桶和近期续接短札", () => {
+test("压缩后自动取回钉选、十个普通桶、自我认知和近期短札", () => {
   const now = Date.parse("2026-08-24T01:00:00+08:00");
   const settings = buildCompactSettings({ dir: "/src", memoryEnabled: true, now });
   const pre = settings.hooks.PreCompact[0].hooks[0];
@@ -20,8 +20,10 @@ test("压缩后由 hook 自动取回钉选桶、十个普通桶和近期续接�
   const after = settings.hooks.SessionStart[0];
   assert.equal(after.matcher, "compact");
   const breath = after.hooks.find((hook) => hook.tool === "breath");
+  const self = after.hooks.find((hook) => hook.tool === "I");
   const recent = after.hooks.find((hook) => hook.tool === "letter_read");
   assert.deepEqual(breath.input, { max_results: BREATH_REGULAR_RESULTS });
+  assert.deepEqual(self.input, { read: true, surface: true });
   assert.equal(BREATH_REGULAR_RESULTS, 10);
   assert.equal(RECENT_LETTER_DAYS, 5);
   assert.equal(recent.input.limit, RECENT_LETTER_RESULTS);

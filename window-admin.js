@@ -117,6 +117,22 @@ function attestationPanel(status = {}) {
 </details>`;
 }
 
+function stopSequencePanel(status = {}) {
+  const guard = status.stopSequence || {};
+  const count = Math.max(0, Math.trunc(finiteNumber(guard.count)));
+  if (!guard.enabled) return `<details class="verify"><summary>伪造 user 拦截</summary>
+<p class="status quiet">当前由后台关闭；没有向 Claude 注入任何相关提示词。</p></details>`;
+  const last = guard.lastAt ? singaporeTime(guard.lastAt) : "尚未触发";
+  return `<details class="verify"><summary>伪造 user 拦截</summary>
+<p class="status fresh">API 层硬停止已启用。只在模型生成精确触发串时切断，不给小克发送规则或提醒。</p>
+<div class="grid verify-grid">
+  <div class="tile">当前原生会话已拦截<strong>${count} 次</strong></div>
+  <div class="tile">最近一次<strong>${escapeHtml(last)}</strong></div>
+</div>
+<p class="muted">触发串：<code>${escapeHtml(guard.sequence || "未设置")}</code> · 计数只认 Anthropic 返回的 <code>stop_reason=stop_sequence</code>，并持久化到私人磁盘。</p>
+</details>`;
+}
+
 function page(title, body, refreshSeconds = 0) {
   const refresh = refreshSeconds > 0
     ? `<meta http-equiv="refresh" content="${Math.round(refreshSeconds)}">`
@@ -198,6 +214,7 @@ export function windowPage(status = {}, { session = null, editName = false, mess
   <div class="tile">${archivePct}% 写信线<strong>${tokenK(limit * archivePct / 100)}</strong></div>
 </div>
 ${attestationPanel(status)}
+${stopSequencePanel(status)}
 ${barkNamePanel(status, session, editName, message, isError)}
 <p>当前进程内已压缩：<strong>${compactCount} 次</strong><br>上次压缩（新加坡时间）：<strong>${escapeHtml(singaporeTime(status.lastCompactAt))}</strong>${status.lastCompactPreTokens ? `<br>上次压缩前：<strong>${tokenK(status.lastCompactPreTokens)}</strong>` : ""}</p>
 <a class="refresh" href="${BASE_PATH}">立即刷新</a>

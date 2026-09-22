@@ -52,12 +52,13 @@ function statusLabel(status) {
     "service-restarted": "服务重启时中断",
     "upstream-error": "上游错误",
     "empty-result": "上游空回",
+    guarded: "异常续写已拦截",
   })[status] || "已结束";
 }
 
 function statusTone(status) {
   if (status === "running") return "live";
-  if (status === "silent" || status === "spoke" || status === "completed") return "ok";
+  if (status === "silent" || status === "spoke" || status === "completed" || status === "guarded") return "ok";
   return "warn";
 }
 

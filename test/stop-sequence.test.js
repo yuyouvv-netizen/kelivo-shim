@@ -6,7 +6,10 @@ import test from "node:test";
 
 import {
   DEFAULT_STOP_SEQUENCE,
+  STOP_SEQUENCE_NOTICE,
+  STOP_SEQUENCE_NOTICE_MARKER,
   StopSequenceStateStore,
+  isStopSequenceNotice,
   stopSequenceFromEnv,
   withStopSequenceExtraBody,
 } from "../stop-sequence.js";
@@ -34,6 +37,14 @@ test("extra body merge rejects malformed stop_sequences instead of silently gues
     () => withStopSequenceExtraBody('{"stop_sequences":"user<"}', "user[消息时间"),
     /must be an array/,
   );
+});
+
+test("the phone-only guard notice has a stable recovery exclusion marker", () => {
+  assert.match(STOP_SEQUENCE_NOTICE, /没有可安全显示的正文/);
+  assert.equal(isStopSequenceNotice(STOP_SEQUENCE_NOTICE), true);
+  assert.equal(isStopSequenceNotice(`HttpException: ${STOP_SEQUENCE_NOTICE}`), true);
+  assert.equal(isStopSequenceNotice("正常正文"), false);
+  assert.equal(STOP_SEQUENCE_NOTICE.includes(STOP_SEQUENCE_NOTICE_MARKER), true);
 });
 
 test("hit counter persists for the same native session and reads zero for a new one", () => {

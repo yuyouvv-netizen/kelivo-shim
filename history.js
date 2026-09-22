@@ -20,6 +20,8 @@ export function recoveryTranscript(messages, options = {}) {
     ? Number.POSITIVE_INFINITY
     : Math.max(0, Number(requestedMax));
   const maxChars = Math.max(0, Number(options.maxChars ?? 240000));
+  const ignoreAssistantText = typeof options.ignoreAssistantText === "function"
+    ? options.ignoreAssistantText : () => false;
   const list = Array.isArray(messages) ? messages : [];
   let currentIndex = -1;
   for (let i = list.length - 1; i >= 0; i--) {
@@ -32,7 +34,7 @@ export function recoveryTranscript(messages, options = {}) {
   const eligible = list.slice(0, currentIndex)
     .filter((m) => m?.role === "user" || m?.role === "assistant")
     .map((m) => ({ role: m.role, text: contentToText(m.content).trim() }))
-    .filter((m) => m.text);
+    .filter((m) => m.text && !(m.role === "assistant" && ignoreAssistantText(m.text)));
   const candidates = Number.isFinite(maxMessages) ? eligible.slice(-maxMessages) : eligible;
 
   const picked = [];

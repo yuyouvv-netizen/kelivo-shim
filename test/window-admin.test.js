@@ -136,6 +136,35 @@ test("window page exposes a zero-token upstream failure instead of calling it co
   assert.match(html, /2\.1\.239/);
 });
 
+test("window page presents a stop-sequence hit as a guard, not an upstream error", () => {
+  const html = windowPage({
+    model: "claude-opus-5",
+    effort: "low",
+    claudeCodeVersion: "2.1.239",
+    tokens: 120000,
+    limit: 167000,
+    attestation: {
+      requestedModel: "claude-opus-5",
+      configuredModel: "claude-opus-5",
+      upstreamModel: "claude-opus-5",
+      requestedEffort: "low",
+      effectiveEffort: "low",
+      status: "guarded",
+      stopSequenceBlocked: true,
+      safeTextAvailable: false,
+      stopReason: "stop_sequence",
+      isError: true,
+      apiErrorStatus: 529,
+      terminalReason: "api_error",
+      errorMessage: "custom stop sequence reached",
+    },
+  });
+  assert.match(html, /异常续写已拦截/);
+  assert.match(html, /本轮没有/);
+  assert.match(html, /显示提示不会进入原生上下文/);
+  assert.doesNotMatch(html, /本轮状态<strong>上游错误/);
+});
+
 test("window page shows the Bark name and pauses refresh while editing", () => {
   const overview = windowPage({ aiName: "小克", barkEnabled: true });
   assert.match(overview, /Bark 通知名字/);

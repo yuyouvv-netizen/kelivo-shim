@@ -15,6 +15,7 @@ const FINAL_STATUSES = new Set([
   "service-restarted",
   "upstream-error",
   "empty-result",
+  "guarded",
 ]);
 
 function cleanToolName(value) {

@@ -75,6 +75,8 @@ import {
 import { normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
 import { configuredDisallowedTools } from "./tool-policy.js";
 import {
+  isStopSequenceNotice,
+  STOP_SEQUENCE_NOTICE,
   StopSequenceStateStore,
   stopSequenceFromEnv,
   withStopSequenceExtraBody,
@@ -1125,16 +1127,21 @@ function handleEvent(ev, sourceProc = proc) {
       }
     }
     const failure = resultFailure(turn, ev);
-    if (failure.stopReason === "stop_sequence") {
+    const stopSequenceBlocked = failure.stopReason === "stop_sequence";
+    if (stopSequenceBlocked) {
       const sessionId = currentWindowSessionId();
       const hit = stopSequenceState.recordHit(sessionId);
       log("[stop-sequence] blocked generated user continuation", {
         session: sessionId ? sessionId.slice(-8) : null,
         count: hit.count,
         persisted: hit.persisted,
+        safeChars: turn.fullText.length,
       });
     }
-    if (turn.attestation) Object.assign(turn.attestation, failure);
+    if (turn.attestation) Object.assign(turn.attestation, failure, {
+      stopSequenceBlocked,
+      safeTextAvailable: stopSequenceBlocked ? !!turn.fullText : null,
+    });
     turnState.event("result", {
       subtype: ev.subtype || "success",
       isError: failure.isError,
@@ -1150,6 +1157,18 @@ function handleEvent(ev, sourceProc = proc) {
         const warning = `${turn.fullText ? "\n\n" : ""}⚠️〔本轮已中止〕驻留会话仍保留。若刚才调用了论坛、邮箱等工具，请先确认动作是否已经完成，再决定是否重发。`;
         turn.fullText += warning;
         turn.sse?.text(warning);
+      }
+    } else if (stopSequenceBlocked) {
+      // The API guard deliberately terminates before the forged user header.
+      // Claude Code currently wraps that clean stop in an api_error result, so
+      // do not replace a safe assistant prefix with a generic upstream error.
+      // When no visible assistant text exists, send a display-only notice
+      // through the active delivery sink without putting it in turn.fullText:
+      // it must not enter the native transcript, mailbox, or recovery state.
+      const interactive = turn.src !== "wake" && turn.src !== "auto-archive";
+      if (interactive && !turn.fullText) {
+        turn.clientNoticeKind = "stop-sequence";
+        try { turn.sse?.text(STOP_SEQUENCE_NOTICE); } catch {}
       }
     } else if (failure.failed) {
       log("[result-error]", {
@@ -1183,14 +1202,18 @@ function handleEvent(ev, sourceProc = proc) {
     const usage = ev.usage ? { output_tokens: ev.usage.output_tokens } : undefined;
     if (turn.attestation) {
       turn.attestation.status = turn.interruptRequestedAt ? "interrupted"
-        : failure.emptyResult ? "empty-result"
+        : stopSequenceBlocked ? "guarded"
+          : failure.emptyResult ? "empty-result"
           : failure.failed ? "upstream-error" : "completed";
       turn.attestation.completedAt = new Date().toISOString();
     }
     const doKill = wantSwitch && archivedOk && proc;
-    const replayable = !failure.failed && (!ev.subtype || ev.subtype === "success") && !turn.interruptRequestedAt;
+    const replayable = !turn.interruptRequestedAt && (stopSequenceBlocked
+      ? !!turn.fullText
+      : !failure.failed && (!ev.subtype || ev.subtype === "success"));
     const deliveryStatus = turn.interruptRequestedAt ? "interrupted"
-      : failure.emptyResult ? "empty-result"
+      : stopSequenceBlocked ? "guarded"
+        : failure.emptyResult ? "empty-result"
         : failure.failed ? "upstream-error" : "completed";
     turn.done = true;
     turnWatchdog.disarm(turn);
@@ -2234,6 +2257,10 @@ function handleMessages(req, res) {
   const recovery = recoveryTranscript(messages, {
     maxMessages: REHYDRATE_MAX_MESSAGES,
     maxChars: REHYDRATE_MAX_CHARS,
+    // Kelivo persists provider/display failures as local assistant bubbles.
+    // Never re-inject this shim-authored guard notice into a rebuilt native
+    // Claude session; it is for the phone only, not part of the conversation.
+    ignoreAssistantText: isStopSequenceNotice,
   });
   const sse = stream ? makeSSE(res, model) : makeCollector(res, model);
   const delivery = new ReplayableDelivery(sse);

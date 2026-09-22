@@ -27,6 +27,47 @@ input.on("line", (line) => {
     setTimeout(() => process.exit(23), 20);
     return;
   }
+  if (process.env.FAKE_CLAUDE_STOP_SEQUENCE) {
+    const safeText = process.env.FAKE_CLAUDE_STOP_SEQUENCE === "text"
+      ? "这是触发串以前的安全正文。" : "";
+    setTimeout(() => {
+      send({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { model, usage: { input_tokens: 10, cache_read_input_tokens: 0 } },
+        },
+      });
+      if (safeText) {
+        send({
+          type: "stream_event",
+          event: {
+            type: "content_block_start", index: 0,
+            content_block: { type: "text", text: "" },
+          },
+        });
+        send({
+          type: "stream_event",
+          event: {
+            type: "content_block_delta", index: 0,
+            delta: { type: "text_delta", text: safeText },
+          },
+        });
+        send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+      }
+      send({
+        type: "stream_event",
+        event: { type: "message_delta", delta: { stop_reason: "stop_sequence" } },
+      });
+      send({
+        type: "result", subtype: "success", is_error: true,
+        api_error_status: 529, terminal_reason: "api_error",
+        result: "custom stop sequence reached",
+        usage: { input_tokens: 10, output_tokens: safeText ? 12 : 3 },
+      });
+    }, 40);
+    return;
+  }
   if (process.env.FAKE_CLAUDE_EMPTY_SUCCESS === "1") {
     setTimeout(() => send({
       type: "result",

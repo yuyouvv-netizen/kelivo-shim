@@ -4,6 +4,13 @@ import path from "path";
 import { validSessionId } from "./session-state.js";
 
 export const DEFAULT_STOP_SEQUENCE = "user[消息时间";
+export const STOP_SEQUENCE_NOTICE_MARKER = "<!-- kelivo:stop-sequence-notice -->";
+export const STOP_SEQUENCE_NOTICE =
+  `⚠️〔异常续写已拦截〕这一轮没有可安全显示的正文，原生会话仍保留。${STOP_SEQUENCE_NOTICE_MARKER}`;
+
+export function isStopSequenceNotice(value) {
+  return typeof value === "string" && value.includes(STOP_SEQUENCE_NOTICE_MARKER);
+}
 
 export function stopSequenceFromEnv(value) {
   if (value === undefined) return DEFAULT_STOP_SEQUENCE;

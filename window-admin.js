@@ -89,11 +89,16 @@ function attestationPanel(status = {}) {
     "kelivo-disabled-cli-minimum": "Kelivo 关闭（CLI 最低档）",
     "server-default": "后台默认",
   })[receipt.effortSource] || "后台默认";
-  const failed = receipt.status === "empty-result" || receipt.status === "upstream-error" ||
-    receipt.isError === true;
-  const tone = failed || hasUpstreamModel && !modelMatches ? "warm"
+  const guarded = receipt.status === "guarded" || receipt.stopSequenceBlocked === true ||
+    receipt.stopReason === "stop_sequence";
+  const failed = !guarded && (receipt.status === "empty-result" ||
+    receipt.status === "upstream-error" || receipt.isError === true);
+  const tone = guarded ? "fresh"
+    : failed || hasUpstreamModel && !modelMatches ? "warm"
     : receipt.signatureSeen ? "fresh" : "quiet";
-  const headline = failed
+  const headline = guarded
+    ? "已在 API 层拦截异常续写；截断前的安全正文（如有）已正常交付。"
+    : failed
     ? receipt.errorMessage || "这一轮没有取得上游模型回复。"
     : hasUpstreamModel && !modelMatches
     ? "上游模型与请求不一致，请先不要靠前端标签判断。"
@@ -110,7 +115,8 @@ function attestationPanel(status = {}) {
   <div class="tile">底层实际 effort<strong>${effortText(receipt.effectiveEffort)}</strong></div>
   <div class="tile">思考类型<strong>${escapeHtml(thinkingState)}</strong><small>显示模式：${escapeHtml(receipt.thinkingDisplay || "summarized")}</small></div>
   <div class="tile">上游签名标记<strong>${escapeHtml(signatureState)}</strong></div>
-  ${failed ? `<div class="tile">本轮状态<strong>${receipt.emptyResult ? "零 token 空回" : "上游错误"}</strong><small>${receipt.apiErrorStatus ? `HTTP ${escapeHtml(receipt.apiErrorStatus)}` : "未取得 HTTP 状态"}</small></div>
+  ${guarded ? `<div class="tile">本轮状态<strong>异常续写已拦截</strong><small>没有把伪造 user 段交付给前端</small></div>
+  <div class="tile">安全正文<strong>${receipt.safeTextAvailable === false ? "本轮没有" : "已按实际结果处理"}</strong><small>显示提示不会进入原生上下文</small></div>` : failed ? `<div class="tile">本轮状态<strong>${receipt.emptyResult ? "零 token 空回" : "上游错误"}</strong><small>${receipt.apiErrorStatus ? `HTTP ${escapeHtml(receipt.apiErrorStatus)}` : "未取得 HTTP 状态"}</small></div>
   <div class="tile">终止诊断<strong>${escapeHtml(receipt.terminalReason || receipt.assistantError || "未回传")}</strong><small>${receipt.rateLimitStatus ? `限流：${escapeHtml(receipt.rateLimitStatus)}` : "限流状态未回传"}</small></div>` : ""}
 </div>
 <p class="muted">Claude Code：${escapeHtml(status.claudeCodeVersion || "unknown")} · 本轮完成（新加坡时间）：${escapeHtml(singaporeTime(receipt.completedAt || receipt.startedAt))}${receipt.localTraceEnabled ? " · 思考显示区另含本地 OB 工具轨迹" : ""}</p>

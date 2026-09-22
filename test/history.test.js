@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "../history.js";
+import { isStopSequenceNotice, STOP_SEQUENCE_NOTICE } from "../stop-sequence.js";
 
 test("只提取文本块", () => {
   assert.equal(contentToText([
@@ -20,6 +21,17 @@ test("恢复历史排除当前最后一条用户消息", () => {
   assert.match(history.text, /第一句/);
   assert.match(history.text, /第一答/);
   assert.doesNotMatch(history.text, /现在这句/);
+});
+
+test("手机显示的异常续写提示不会进入进程重启恢复历史", () => {
+  const history = recoveryTranscript([
+    { role: "user", content: "上一句" },
+    { role: "assistant", content: STOP_SEQUENCE_NOTICE },
+    { role: "user", content: "现在这句" },
+  ], { ignoreAssistantText: isStopSequenceNotice });
+  assert.equal(history.messages, 1);
+  assert.match(history.text, /上一句/);
+  assert.doesNotMatch(history.text, /异常续写已拦截|没有可安全显示的正文/);
 });
 
 test("没有旧历史时不包装当前消息", () => {

@@ -78,7 +78,7 @@ import {
   isStopSequenceNotice,
   STOP_SEQUENCE_NOTICE,
   StopSequenceStateStore,
-  stopSequenceFromEnv,
+  stopSequencesFromEnv,
   withStopSequenceExtraBody,
 } from "./stop-sequence.js";
 import {
@@ -134,7 +134,7 @@ const WAKE_MODE_FILE = process.env.WAKE_MODE_FILE || "/persona/wake-mode.json";
 const WAKE_HISTORY_FILE = process.env.WAKE_HISTORY_FILE || DEFAULT_WAKE_HISTORY_FILE;
 const STATUS_FILE = process.env.STATUS_FILE || DEFAULT_STATUS_FILE;
 const STATUS_WRITE_TOKEN = String(process.env.STATUS_WRITE_TOKEN || "").trim();
-const STOP_SEQUENCE = stopSequenceFromEnv(process.env.CLAUDE_STOP_SEQUENCE);
+const STOP_SEQUENCES = stopSequencesFromEnv(process.env.CLAUDE_STOP_SEQUENCE);
 const STOP_SEQUENCE_STATE_FILE = process.env.STOP_SEQUENCE_STATE_FILE ||
   "/persona/claude-state/stop-sequence.json";
 const STATUS_MCP_APPROVAL_CONFIGURED = process.env.STATUS_MCP_APPROVAL_CONFIGURED === "1";
@@ -612,16 +612,16 @@ function spawnClaude(kelivoSystem, model, effort) {
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
   }
-  if (STOP_SEQUENCE) {
+  if (STOP_SEQUENCES.length) {
     try {
       env.CLAUDE_CODE_EXTRA_BODY = withStopSequenceExtraBody(
         env.CLAUDE_CODE_EXTRA_BODY,
-        STOP_SEQUENCE,
+        STOP_SEQUENCES,
       );
     } catch (error) {
       // A broken pre-existing EXTRA_BODY should not disable the guard. Keep the
       // child request valid and make the fallback visible only in server logs.
-      env.CLAUDE_CODE_EXTRA_BODY = JSON.stringify({ stop_sequences: [STOP_SEQUENCE] });
+      env.CLAUDE_CODE_EXTRA_BODY = JSON.stringify({ stop_sequences: STOP_SEQUENCES });
       log("[stop-sequence] invalid CLAUDE_CODE_EXTRA_BODY; replaced with guard only",
         error?.message || String(error));
     }
@@ -1456,8 +1456,9 @@ registerWindowAdmin(app, {
     lastCompactAt: lastCompactAt ? new Date(lastCompactAt).toISOString() : null,
     lastCompactPreTokens: lastCompactPre || null,
     stopSequence: {
-      enabled: !!STOP_SEQUENCE,
-      sequence: STOP_SEQUENCE,
+      enabled: STOP_SEQUENCES.length > 0,
+      sequence: STOP_SEQUENCES[0] || null,
+      sequences: STOP_SEQUENCES,
       ...stopSequenceState.forSession(currentWindowSessionId()),
     },
   }),
@@ -1495,8 +1496,9 @@ app.get("/debug", (_q, r) => r.json({
   import: importHistory.status(),
   prompt: { mode: SYSTEM_PROMPT_MODE, chars: spawnedSystemPromptChars },
   stopSequence: {
-    enabled: !!STOP_SEQUENCE,
-    sequence: STOP_SEQUENCE,
+    enabled: STOP_SEQUENCES.length > 0,
+    sequence: STOP_SEQUENCES[0] || null,
+    sequences: STOP_SEQUENCES,
     ...stopSequenceState.forSession(currentWindowSessionId()),
   },
   window: {

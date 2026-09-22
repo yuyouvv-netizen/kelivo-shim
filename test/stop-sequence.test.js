@@ -6,30 +6,40 @@ import test from "node:test";
 
 import {
   DEFAULT_STOP_SEQUENCE,
+  DEFAULT_STOP_SEQUENCES,
   STOP_SEQUENCE_NOTICE,
   STOP_SEQUENCE_NOTICE_MARKER,
   StopSequenceStateStore,
   isStopSequenceNotice,
   stopSequenceFromEnv,
+  stopSequencesFromEnv,
   withStopSequenceExtraBody,
 } from "../stop-sequence.js";
 
-test("stop sequence defaults to the precise forged-user header and can be disabled", () => {
+test("stop sequences cover the live timestamp header and retain the legacy variant", () => {
   assert.equal(stopSequenceFromEnv(undefined), DEFAULT_STOP_SEQUENCE);
-  assert.equal(DEFAULT_STOP_SEQUENCE, "user[消息时间");
+  assert.equal(DEFAULT_STOP_SEQUENCE, "user【时间");
+  assert.deepEqual(DEFAULT_STOP_SEQUENCES, ["user【时间", "user[消息时间"]);
+  assert.deepEqual(stopSequencesFromEnv(undefined), DEFAULT_STOP_SEQUENCES);
+  assert.equal("user【时间 2026-09-22 13:41 周二】".startsWith(DEFAULT_STOP_SEQUENCE), true);
   assert.equal(stopSequenceFromEnv("0"), null);
   assert.equal(stopSequenceFromEnv(""), null);
   assert.equal(stopSequenceFromEnv("\\nHuman:"), "\\nHuman:");
+  assert.deepEqual(stopSequencesFromEnv("0"), []);
+  assert.deepEqual(stopSequencesFromEnv("\\nHuman:"), ["\\nHuman:"]);
 });
 
 test("extra body merge preserves unrelated fields and de-duplicates stop sequences", () => {
-  const raw = withStopSequenceExtraBody('{"thinking":{"display":"summarized"},"stop_sequences":["user<"]}', "user[消息时间");
+  const raw = withStopSequenceExtraBody(
+    '{"thinking":{"display":"summarized"},"stop_sequences":["user<"]}',
+    DEFAULT_STOP_SEQUENCES,
+  );
   assert.deepEqual(JSON.parse(raw), {
     thinking: { display: "summarized" },
-    stop_sequences: ["user<", "user[消息时间"],
+    stop_sequences: ["user<", "user【时间", "user[消息时间"],
   });
-  const repeated = withStopSequenceExtraBody(raw, "user[消息时间");
-  assert.deepEqual(JSON.parse(repeated).stop_sequences, ["user<", "user[消息时间"]);
+  const repeated = withStopSequenceExtraBody(raw, DEFAULT_STOP_SEQUENCES);
+  assert.deepEqual(JSON.parse(repeated).stop_sequences, ["user<", "user【时间", "user[消息时间"]);
 });
 
 test("extra body merge rejects malformed stop_sequences instead of silently guessing", () => {

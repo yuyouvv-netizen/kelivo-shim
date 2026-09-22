@@ -3,7 +3,11 @@ import path from "path";
 
 import { validSessionId } from "./session-state.js";
 
-export const DEFAULT_STOP_SEQUENCE = "user[消息时间";
+export const DEFAULT_STOP_SEQUENCES = Object.freeze([
+  "user【时间",
+  "user[消息时间",
+]);
+export const DEFAULT_STOP_SEQUENCE = DEFAULT_STOP_SEQUENCES[0];
 export const STOP_SEQUENCE_NOTICE_MARKER = "<!-- kelivo:stop-sequence-notice -->";
 export const STOP_SEQUENCE_NOTICE =
   `⚠️〔异常续写已拦截〕这一轮没有可安全显示的正文，原生会话仍保留。${STOP_SEQUENCE_NOTICE_MARKER}`;
@@ -13,13 +17,17 @@ export function isStopSequenceNotice(value) {
 }
 
 export function stopSequenceFromEnv(value) {
-  if (value === undefined) return DEFAULT_STOP_SEQUENCE;
-  const text = String(value);
-  if (!text.trim() || text.trim() === "0") return null;
-  return text;
+  return stopSequencesFromEnv(value)[0] || null;
 }
 
-export function withStopSequenceExtraBody(raw, sequence) {
+export function stopSequencesFromEnv(value) {
+  if (value === undefined) return [...DEFAULT_STOP_SEQUENCES];
+  const text = String(value);
+  if (!text.trim() || text.trim() === "0") return [];
+  return [text];
+}
+
+export function withStopSequenceExtraBody(raw, sequences) {
   const text = String(raw || "").trim();
   let body = {};
   if (text) {
@@ -28,12 +36,14 @@ export function withStopSequenceExtraBody(raw, sequence) {
       throw new Error("CLAUDE_CODE_EXTRA_BODY must be a JSON object");
     }
   }
-  if (!sequence) return text || "";
+  const requested = (Array.isArray(sequences) ? sequences : [sequences])
+    .filter((item) => typeof item === "string" && item);
+  if (!requested.length) return text || "";
   if (body.stop_sequences !== undefined && !Array.isArray(body.stop_sequences)) {
     throw new Error("CLAUDE_CODE_EXTRA_BODY.stop_sequences must be an array");
   }
   const existing = (body.stop_sequences || []).filter((item) => typeof item === "string" && item);
-  body.stop_sequences = [...new Set([...existing, sequence])];
+  body.stop_sequences = [...new Set([...existing, ...requested])];
   return JSON.stringify(body);
 }
 

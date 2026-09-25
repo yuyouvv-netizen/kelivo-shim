@@ -19,17 +19,31 @@ test("标准 200K auto-compact 窗口对应约 167k 真实压缩线", () => {
   assert.equal(windowPct(142000, 167000), 85);
 });
 
-test("普通订阅模型会夹住旧的 1M 配置，只有 [1m] 显式开启扩展窗口", () => {
+test("普通 4.6 与未知型号仍夹住旧的 1M 配置", () => {
   assert.equal(contextWindowForModel("claude-opus-4-6", 1000000), 200000);
-  assert.equal(contextWindowForModel("claude-opus-5", 1000000), 200000);
+  assert.equal(contextWindowForModel("claude-unknown-model", 1000000), 200000);
   assert.equal(contextWindowForModel("claude-opus-4-6[1m]", 200000), 1000000);
   assert.equal(hasExtendedContext("claude-opus-4-6[1m]"), true);
   assert.equal(hasExtendedContext("claude-opus-4-6"), false);
 });
 
+test("原生 1M 型号的压缩线和 85%/90% 提醒随模型扩展", () => {
+  for (const model of [
+    "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5",
+    "claude-opus-5-5", "claude-fable-5",
+  ]) {
+    assert.equal(contextWindowForModel(model, 200000), 1000000, model);
+    assert.equal(monitorLimitForModel(model, 200000), 967000, model);
+    assert.equal(windowPct(822000, monitorLimitForModel(model, 200000)), 85, model);
+    assert.equal(windowPct(870300, monitorLimitForModel(model, 200000)), 90, model);
+  }
+});
+
 test("监测线不会被遗留的 967k WINDOW_LIMIT 撑过原生压缩线", () => {
   assert.equal(monitorLimitForModel("claude-opus-4-6", 1000000, 967000), 167000);
   assert.equal(monitorLimitForModel("claude-opus-4-6", 200000, 150000), 150000);
+  assert.equal(monitorLimitForModel("claude-opus-5-5", 200000, 967000), 967000);
+  assert.equal(monitorLimitForModel("claude-opus-5-5", 200000, 150000), 150000);
 });
 
 test("message_start 给出单次请求的真实前缀", () => {

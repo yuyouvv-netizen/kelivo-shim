@@ -7,7 +7,7 @@
 - Kelivo 的思维链强度会透传为 Claude Code `--effort`;切档只重启运行管道并续接原生 session
 - 可用 `CLAUDE_SYSTEM_PROMPT_MODE=replace` 移除 Claude Code 原生软件工程提示词，同时保留 CLAUDE.md、MCP 工具和压缩恢复钩子
 - Claude Code 精确锁定在 `2.1.280`（支持当前新模型），并由 `package-lock.json` + `npm ci` 阻止未来部署时静默升级
-- 标准 200K 长对话在真实压缩线的 90% 自动写一封 OB Letter 续接信;压缩后自动取回全部钉选桶、按 OB 排名浮现的 10 个普通桶与最近五天的续接信
+- 普通 Opus 4.6 按 200K，原生 1M 型号按 1M 计算窗口；长对话在对应压缩线的 90% 自动写一封 OB Letter 续接信，压缩后自动取回全部钉选桶、按 OB 排名浮现的 10 个普通桶与最近五天的续接信
 - 异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底
 - Kelivo 自动标题在 shim 本地生成,不会串进常驻 Claude 的私人对话上下文
 - WebSearch/MCP 静默执行时持续发 SSE 心跳,避免“Claude 已搜完、Kelivo 却断流”

@@ -242,9 +242,8 @@ if (process.env.BIRD_MCP_URL) {
 }
 
 // ---- 长对话记忆保全 ----------------------------------------------------------
-// 普通订阅模型固定按标准 200K 算；只有模型名显式带 [1m] 才启用 1M。
-// 这会把旧部署遗留的 1M 环境变量安全夹回真实模型上限，避免 shim 还在等
-// 85%/90% 时 Claude Code 已先于它完成原生压缩。
+// 已确认的原生 1M 模型按 1M；Opus 4.6 普通版和未知型号按 200K。
+// 模型切换时会重算进度、归档线及传给 Claude Code 的自动压缩窗口。
 const autoCompactRaw = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ||
   process.env.AUTO_COMPACT_WINDOW || String(DEFAULT_AUTO_COMPACT_WINDOW);
 const CONFIGURED_AUTO_COMPACT_WINDOW = Number(autoCompactRaw) > 0

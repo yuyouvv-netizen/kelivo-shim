@@ -1,16 +1,25 @@
 // Claude Code 的窗口用量必须从每次 API 请求自己的 message_start 事件取。
 // result.usage 是一整轮(含多次工具调用)的累加值,拿它会把窗口虚报数倍。
 
-// 普通订阅路径的 Claude Code 会话是标准 200K。只有模型名显式带 [1m]
-// 才按扩展上下文处理；这样旧部署里遗留的 1M 环境变量不会让 shim 误以为
-// 还有八十多万 token，错过真实的归档与压缩线。
+// Opus 4.7 及之后已确认的型号和 Fable 5 在 Anthropic 直连路径原生使用 1M。
+// Opus 4.6 普通版仍是 200K，只有显式 [1m] 才启用扩展窗口。
+// 未知型号保守按 200K，避免旧部署遗留的 1M 环境变量错过归档线。
 export const DEFAULT_AUTO_COMPACT_WINDOW = 200000;
 export const EXTENDED_AUTO_COMPACT_WINDOW = 1000000;
 export const COMPACT_OUTPUT_RESERVE = 20000;
 export const COMPACT_BUFFER = 13000;
 
+const NATIVE_EXTENDED_MODELS = new Set([
+  "claude-opus-4-7",
+  "claude-opus-4-8",
+  "claude-opus-5",
+  "claude-opus-5-5",
+  "claude-fable-5",
+]);
+
 export function hasExtendedContext(model = "") {
-  return /\[1m\]\s*$/i.test(String(model));
+  const name = String(model).trim().toLowerCase();
+  return NATIVE_EXTENDED_MODELS.has(name) || /\[1m\]$/.test(name);
 }
 
 export function contextWindowForModel(model, configuredWindow = DEFAULT_AUTO_COMPACT_WINDOW) {

@@ -149,6 +149,14 @@ if [ -n "${BROWSER_MCP_URL:-}" ] || [ -n "${BROWSER_MCP_TOKEN:-}" ]; then
   fi
 fi
 
+# 文字钓鱼 MCP:与 browser 一样只把环境变量引用写进配置，真实地址和
+# X-Token 不落盘、不进仓库。服务名固定为 fish，对应 mcp__fish__fish。
+if [ -n "${FISHING_MCP_URL:-}" ] || [ -n "${FISHING_MCP_TOKEN:-}" ]; then
+  if ! node fish-mcp-config.js; then
+    exit 1
+  fi
+fi
+
 # Claude Code 的 MCP 配置允许给单个服务设置 env；该层会覆盖父进程环境。
 # 旧私有配置若固定过 ~/.gmail-mcp，就会在上面的 /persona 选择之后仍读旧令牌。
 # 把同一对持久卷路径写进 gmail 服务自身的 env，确保所有启动层一致。这里只写

@@ -166,6 +166,9 @@ const configuredAllowed = (process.env.ALLOWED_TOOLS ||
   .split(",").map((s) => s.trim()).filter(Boolean);
 configuredAllowed.push("mcp__status__look");
 if (process.env.BIRD_MCP_URL) configuredAllowed.push("mcp__toy");
+if (process.env.FISHING_MCP_URL && process.env.FISHING_MCP_TOKEN) {
+  configuredAllowed.push("mcp__fish");
+}
 if (process.env.BROWSER_MCP_URL && process.env.BROWSER_MCP_TOKEN) {
   configuredAllowed.push("mcp__browser");
 }

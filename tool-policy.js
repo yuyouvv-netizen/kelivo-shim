@@ -21,19 +21,13 @@ export const DEFAULT_DISALLOWED_MCP_TOOLS = Object.freeze([
   "mcp__gmail__delete_filter",
   "mcp__gmail__create_filter_from_template",
 
-  // Garden: retain the forum and bottle tools.
-  "mcp__garden__join_game",
-  "mcp__garden__start_game",
-  "mcp__garden__leave_waiting_game",
-  "mcp__garden__list_games",
-  "mcp__garden__get_my_status",
-  "mcp__garden__submit_action",
-  "mcp__garden__get_game_summary",
+  // Garden: retain the forum, bottle and core game tools. Keep chat and
+  // Nostos hidden so games such as Misttide Islands work without reopening
+  // the noisy legacy surfaces.
   "mcp__garden__send_game_chat",
   "mcp__garden__get_chat_messages",
   "mcp__garden__send_chat_message",
   "mcp__garden__withdraw_chat_message",
-  "mcp__garden__get_tool_schema",
   "mcp__garden__nostos_start",
   "mcp__garden__nostos_act",
   "mcp__garden__nostos_status",

@@ -24,6 +24,14 @@ const retained = [
   "mcp__garden__delete_thread",
   "mcp__garden__delete_reply",
   "mcp__garden__review_draft_bottles",
+  "mcp__garden__list_games",
+  "mcp__garden__join_game",
+  "mcp__garden__start_game",
+  "mcp__garden__leave_waiting_game",
+  "mcp__garden__get_my_status",
+  "mcp__garden__submit_action",
+  "mcp__garden__get_game_summary",
+  "mcp__garden__get_tool_schema",
   "mcp__browser__handle_dialog",
   "mcp__browser__type_text",
   "mcp__browser__x_read_home",
@@ -43,11 +51,11 @@ const retained = [
   "mcp__toy__toy_control",
 ];
 
-test("default MCP denylist hides only the 35 requested tools", () => {
-  assert.equal(DEFAULT_DISALLOWED_MCP_TOOLS.length, 35);
-  assert.equal(new Set(DEFAULT_DISALLOWED_MCP_TOOLS).size, 35);
+test("default MCP denylist hides only the 27 requested tools", () => {
+  assert.equal(DEFAULT_DISALLOWED_MCP_TOOLS.length, 27);
+  assert.equal(new Set(DEFAULT_DISALLOWED_MCP_TOOLS).size, 27);
   assert.equal(DEFAULT_DISALLOWED_MCP_TOOLS.filter((name) => name.startsWith("mcp__gmail__")).length, 16);
-  assert.equal(DEFAULT_DISALLOWED_MCP_TOOLS.filter((name) => name.startsWith("mcp__garden__")).length, 15);
+  assert.equal(DEFAULT_DISALLOWED_MCP_TOOLS.filter((name) => name.startsWith("mcp__garden__")).length, 7);
   assert.equal(DEFAULT_DISALLOWED_MCP_TOOLS.filter((name) => name.startsWith("mcp__browser__")).length, 4);
   assert.ok(DEFAULT_DISALLOWED_MCP_TOOLS.every((name) => /^mcp__[^*]+__[^*]+$/.test(name)));
   for (const name of retained) assert.ok(!DEFAULT_DISALLOWED_MCP_TOOLS.includes(name), name);

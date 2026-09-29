@@ -21,7 +21,7 @@ async function freePort() {
   return port;
 }
 
-test("default model list exposes Opus 5 without changing the current default", { timeout: 10_000 }, async (t) => {
+test("default model list exposes recent models without changing the current default", { timeout: 10_000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-models-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const port = await freePort();
@@ -61,6 +61,8 @@ test("default model list exposes Opus 5 without changing the current default", {
     "claude-opus-4-6",
     "claude-opus-4-8",
     "claude-opus-5",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
     "claude-fable-5",
   ]);
   assert.equal(payload.first_id, "claude-opus-4-6");

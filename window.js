@@ -1,7 +1,7 @@
 // Claude Code 的窗口用量必须从每次 API 请求自己的 message_start 事件取。
 // result.usage 是一整轮(含多次工具调用)的累加值,拿它会把窗口虚报数倍。
 
-// Opus 4.7 及之后已确认的型号和 Fable 5 在 Anthropic 直连路径原生使用 1M。
+// Opus 4.7 及之后、Sonnet 5 及之后和 Fable 5 在 Anthropic 直连路径原生使用 1M。
 // Opus 4.6 普通版仍是 200K，只有显式 [1m] 才启用扩展窗口。
 // 未知型号保守按 200K，避免旧部署遗留的 1M 环境变量错过归档线。
 export const DEFAULT_AUTO_COMPACT_WINDOW = 200000;
@@ -14,6 +14,8 @@ const NATIVE_EXTENDED_MODELS = new Set([
   "claude-opus-4-8",
   "claude-opus-5",
   "claude-opus-5-5",
+  "claude-sonnet-5",
+  "claude-sonnet-5-5",
   "claude-fable-5",
 ]);
 

@@ -23,7 +23,18 @@ test("Telegram paragraph bubbles do not emit standalone punctuation and respect 
   const bubbles = telegramParagraphBubbles(source, 2, 120);
   assert.equal(bubbles.length, 2);
   assert.equal(bubbles[0], `${first}\n\n...\n\n直到这里才结束。`);
-  assert.equal(bubbles[1], "——\n\n第二段已经完整结束。\n\n第三段也完整结束。");
+  assert.equal(bubbles[1], "第二段已经完整结束。\n\n第三段也完整结束。");
+});
+
+test("Telegram hides standalone em-dash dividers but preserves meaningful dashes", () => {
+  assert.deepEqual(
+    telegramParagraphBubbles("第一段。\n——\n第二段不是——真的不是——第三段。"),
+    ["第一段。\n第二段不是——真的不是——第三段。"],
+  );
+  assert.deepEqual(
+    telegramParagraphBubbles("```\n——\n```"),
+    ["```\n——\n```"],
+  );
 });
 
 test("Telegram paragraph bubbles split dense prose only at sentence endings", () => {

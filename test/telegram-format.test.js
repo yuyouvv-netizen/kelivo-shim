@@ -23,10 +23,27 @@ test("Telegram HTML renders common bold markers without trusting model HTML", ()
   }), false);
 });
 
-test("Telegram paragraph bubbles keep ordinary line breaks and pack short thoughts", () => {
+test("Telegram paragraph bubbles keep ordinary line breaks and separate blank-line paragraphs", () => {
   assert.deepEqual(
     telegramParagraphBubbles("第一行\n仍是同一段\n\n第二个完整段落"),
-    ["第一行\n仍是同一段\n\n第二个完整段落"],
+    ["第一行\n仍是同一段", "第二个完整段落"],
+  );
+});
+
+test("Telegram paragraph bubbles preserve a sequence of conversational paragraphs", () => {
+  const paragraphs = [
+    "先给结论。",
+    "原理很简单：这里解释第一层。",
+    "所以，这里给出直接影响。",
+    "而且，这里补充第二个影响。",
+    "这件事很重要。",
+    "以前是一种状态。",
+    "现在是另一种状态。",
+    "（最后留一句轻声说明。）",
+  ];
+  assert.deepEqual(
+    telegramParagraphBubbles(paragraphs.join("\n\n")),
+    paragraphs,
   );
 });
 
@@ -100,12 +117,12 @@ test("Telegram paragraph bubbles balance excess parts instead of creating a gian
   assert.ok(Math.abs(bubbles[0].length - bubbles[1].length) < paragraph.length * 2);
 });
 
-test("Telegram paragraph bubbles rebalance a tiny final orphan by whole parts", () => {
+test("Telegram paragraph bubbles do not glue a short final paragraph backwards", () => {
   const first = `${"甲".repeat(119)}。`;
   const second = `${"乙".repeat(109)}。`;
   const third = `${"丙".repeat(29)}。`;
   assert.deepEqual(
     telegramParagraphBubbles(`${first}\n\n${second}\n\n${third}`, 12, 260),
-    [first, `${second}\n\n${third}`],
+    [first, second, third],
   );
 });

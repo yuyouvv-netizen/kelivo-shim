@@ -41,7 +41,7 @@ test("Telegram paragraph bubbles do not emit standalone punctuation and respect 
 
 test("Telegram hides standalone em-dash dividers but preserves meaningful dashes", () => {
   assert.deepEqual(
-    telegramParagraphBubbles("第一段。\n——\n第二段不是——真的不是——第三段。"),
+    telegramParagraphBubbles("第一段。\n——\n---\n第二段不是——真的不是——第三段。"),
     ["第一段。\n第二段不是——真的不是——第三段。"],
   );
   assert.deepEqual(
@@ -98,4 +98,14 @@ test("Telegram paragraph bubbles balance excess parts instead of creating a gian
   assert.match(bubbles[0], /。$/);
   assert.match(bubbles[1], /。$/);
   assert.ok(Math.abs(bubbles[0].length - bubbles[1].length) < paragraph.length * 2);
+});
+
+test("Telegram paragraph bubbles rebalance a tiny final orphan by whole parts", () => {
+  const first = `${"甲".repeat(119)}。`;
+  const second = `${"乙".repeat(109)}。`;
+  const third = `${"丙".repeat(29)}。`;
+  assert.deepEqual(
+    telegramParagraphBubbles(`${first}\n\n${second}\n\n${third}`, 12, 260),
+    [first, `${second}\n\n${third}`],
+  );
 });

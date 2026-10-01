@@ -17,8 +17,12 @@ function telegramParagraphs(text) {
   };
 
   for (const line of text.split("\n")) {
-    if (line.trim().startsWith("```")) fenced = !fenced;
-    if (!fenced && !line.trim()) flush();
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) fenced = !fenced;
+    // 虞克把独占一行的长破折号当视觉换行；Telegram 直接保留节奏，
+    // 不把这条分隔线显示给又又。句内破折号和代码块内容不受影响。
+    if (!fenced && /^[—–]{2,}$/.test(trimmed)) continue;
+    if (!fenced && !trimmed) flush();
     else lines.push(line);
   }
   flush();

@@ -1868,22 +1868,23 @@ function createTgToolStatus() {
     },
   };
 }
-// 默认一轮一个完整气泡，避免 Markdown 的普通换行把一句话切碎。
-// 显式设 TG_SPLIT=1 时才按空行分成完整段落；段内换行仍留在同一个气泡。
+// 默认一轮一个完整气泡；TG_SPLIT=1 开启“微信式”小段气泡。
+// 只在完整段落/句末拆分，不会按模型的普通换行生硬切句。
 const TG_SPLIT = process.env.TG_SPLIT === "1";
-const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 8);
+const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 12);
+const TG_SPLIT_TARGET = +(process.env.TG_SPLIT_TARGET || 260);
 const tgSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function tgSendBubbles(text) {
   if (!tgChatId || !text) return 0;
   if (!TG_SPLIT) return tgSend(text);
-  const bubbles = telegramParagraphBubbles(text, TG_SPLIT_MAX);
+  const bubbles = telegramParagraphBubbles(text, TG_SPLIT_MAX, TG_SPLIT_TARGET);
   if (bubbles.length <= 1) return tgSend(text);
   let delivered = 0;
   try {
     for (let i = 0; i < bubbles.length; i++) {
       if (i) { // 第二条起:先亮"正在输入",按字数停顿,再发——手感像真人打字
         tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {});
-        await tgSleep(Math.min(500 + bubbles[i].length * 35, 2500));
+        await tgSleep(Math.min(250 + bubbles[i].length * 5, 900));
       }
       delivered += await tgSend(bubbles[i]);
     }

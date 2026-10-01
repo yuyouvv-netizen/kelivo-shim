@@ -64,3 +64,11 @@ test("不传 has 时默认全部命中(注册表由调用方把关)", () => {
   assert.deepEqual(splitStickerSegments("[贴纸:随便什么]"),
     [{ type: "sticker", content: "随便什么" }]);
 });
+
+test("代码里的贴纸标记只是示例,不会触发贴纸", () => {
+  const raw = "写法是 `[贴纸:得意]`，真的再发[贴纸:委屈]";
+  assert.deepEqual(splitStickerSegments(raw, has), [
+    { type: "text", content: "写法是 `[贴纸:得意]`，真的再发" },
+    { type: "sticker", content: "委屈" },
+  ]);
+});

@@ -1913,7 +1913,7 @@ function createTgToolStatus() {
 // 只在完整段落/句末拆分，不会按模型的普通换行生硬切句。
 const TG_SPLIT = process.env.TG_SPLIT === "1";
 const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 12);
-const TG_SPLIT_TARGET = +(process.env.TG_SPLIT_TARGET || 260);
+const TG_SPLIT_TARGET = +(process.env.TG_SPLIT_TARGET || 160);
 const tgSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function tgSendBubbles(text) {
   if (!tgChatId || !text) return 0;

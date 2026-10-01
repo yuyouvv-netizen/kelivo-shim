@@ -1910,7 +1910,7 @@ function createTgToolStatus() {
   };
 }
 // 默认一轮一个完整气泡；TG_SPLIT=1 开启“微信式”小段气泡。
-// 只在完整段落/句末拆分，不会按模型的普通换行生硬切句。
+// 空行分开的自然段各自成泡；长段只在句末继续拆，不会生硬切句。
 const TG_SPLIT = process.env.TG_SPLIT === "1";
 const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 12);
 const TG_SPLIT_TARGET = +(process.env.TG_SPLIT_TARGET || 160);

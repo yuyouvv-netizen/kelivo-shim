@@ -134,10 +134,6 @@ function splitLongParagraph(paragraph, target, hardMax) {
   return chunks;
 }
 
-function visibleTail(value) {
-  return value.replace(/\*\*/g, "").trim().at(-1) || "";
-}
-
 function mergeSmallestNeighbours(parts, limit) {
   const merged = [...parts];
   while (merged.length > limit) {
@@ -161,7 +157,8 @@ export function telegramParagraphBubbles(value, max = 12, target = 160) {
   const paragraphs = telegramParagraphs(text);
 
   // Repair presentation-only breaks before deciding where a bubble ends.
-  // Ellipses often sit inside one thought; dividers introduce the next one.
+  // Ellipses often sit inside one thought. Every other blank-line paragraph is
+  // an explicit conversational boundary and therefore becomes its own bubble.
   const repaired = [];
   let prefix = "";
   let joinNext = false;
@@ -181,9 +178,7 @@ export function telegramParagraphBubbles(value, max = 12, target = 160) {
     const current = `${prefix}${paragraph}`;
     prefix = "";
     const previous = repaired.at(-1);
-    const previousLooksCut = previous
-      && !/[。！？!?：:；;）)」』”’"】\]]/.test(visibleTail(previous));
-    if (previous && (joinNext || previousLooksCut)) {
+    if (previous && joinNext) {
       repaired[repaired.length - 1] += `\n\n${current}`;
     } else {
       repaired.push(current);
@@ -199,41 +194,8 @@ export function telegramParagraphBubbles(value, max = 12, target = 160) {
     splitLongParagraph(paragraph, targetLength, hardMax)
   ));
 
-  // Pack short adjacent thoughts into one small conversational bubble. A
-  // normal paragraph remains intact; oversized prose is split at sentence ends.
-  const groups = [];
-  let group = [];
-  for (const part of semanticParts) {
-    const joined = [...group, part].join("\n\n");
-    if (group.length && joined.length > targetLength) {
-      groups.push(group);
-      group = [part];
-    } else {
-      group.push(part);
-    }
-  }
-  if (group.length) groups.push(group);
-
-  // Greedy packing can leave a tiny orphan at the end. Move only complete
-  // semantic parts, and only when doing so produces a more balanced pair.
-  if (groups.length > 1) {
-    const previous = groups.at(-2);
-    const last = groups.at(-1);
-    const lengthOf = (parts) => parts.join("\n\n").length;
-    while (previous.length > 1 && lengthOf(last) < Math.round(targetLength * 0.4)) {
-      const before = Math.abs(lengthOf(previous) - lengthOf(last));
-      const moved = previous.at(-1);
-      const nextPrevious = previous.slice(0, -1);
-      const nextLast = [moved, ...last];
-      const after = Math.abs(lengthOf(nextPrevious) - lengthOf(nextLast));
-      if (after >= before || lengthOf(nextLast) > hardMax) break;
-      previous.pop();
-      last.unshift(moved);
-    }
-  }
-
-  const bubbles = groups.map((parts) => parts.join("\n\n"));
-
   const limit = Math.max(1, Math.min(20, Number(max) || 12));
-  return bubbles.length > limit ? mergeSmallestNeighbours(bubbles, limit) : bubbles;
+  return semanticParts.length > limit
+    ? mergeSmallestNeighbours(semanticParts, limit)
+    : semanticParts;
 }

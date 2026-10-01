@@ -55,6 +55,7 @@ import { ReplayableDelivery } from "./delivery.js";
 import { requestFingerprint, TurnStateStore } from "./turn-state.js";
 import {
   clearSessionState,
+  loadSessionBootstrap,
   loadSessionState,
   nativeResumeDefinitelyRejected,
   restoreMissingSessionTranscript,
@@ -391,8 +392,27 @@ function autoArchiveTurn(pct) {
 }
 
 // ---- 常驻 claude 进程 --------------------------------------------------------
-let proc = null, busy = false, spawnedSystem = "", spawnedModel = MODEL;
-let spawnedEffort = effortFor(MODEL);
+const persistedSessionBootstrap = SESSION_RESUME ? loadSessionBootstrap(SESSION_STATE_FILE) : null;
+const persistedRuntime = persistedSessionBootstrap?.runtime || null;
+const persistedRuntimeFingerprint = persistedRuntime ? sessionFingerprint(
+  persistedRuntime.model,
+  `${SYSTEM_PROMPT_MODE}\n${buildSystemPrompt({
+    basePrompt: BASE_SYSTEM_PROMPT,
+    memoryContinuityRule: MEMORY_CONTINUITY_RULE,
+    kelivoSystem: persistedRuntime.system,
+  })}`,
+) : null;
+const persistedRuntimeUsable = !!persistedRuntime &&
+  persistedRuntimeFingerprint === persistedSessionBootstrap.fingerprint;
+let coldStartNeedsKelivo = !!persistedSessionBootstrap && !persistedRuntimeUsable;
+let proc = null, busy = false;
+let spawnedSystem = persistedRuntimeUsable ? persistedRuntime.system : "";
+let spawnedModel = persistedRuntimeUsable ? persistedRuntime.model : MODEL;
+let spawnedEffort = normalizeClaudeEffort(
+  persistedRuntimeUsable ? persistedRuntime.effort : null,
+  spawnedModel,
+  effortFor(spawnedModel),
+);
 let spawnedSystemPromptChars = 0;
 const queue = [];
 let turn = null;
@@ -932,8 +952,15 @@ function handleEvent(ev, sourceProc = proc) {
       restoreWindowThresholdState(ev.session_id, sourceProc.kelivoSessionResumed);
     }
     if (firstConfirmation && !saveSessionState(SESSION_STATE_FILE, {
-      sessionId: nativeSessionId, fingerprint: nativeSessionFingerprint,
+      sessionId: nativeSessionId,
+      fingerprint: nativeSessionFingerprint,
+      runtime: {
+        system: spawnedSystem,
+        model: spawnedModel,
+        effort: spawnedEffort,
+      },
     })) log("[session] WARNING: could not persist native session state");
+    if (firstConfirmation) coldStartNeedsKelivo = false;
   }
   // A killed process can flush a final result after its replacement starts.
   // Never let that stale event finish or mutate the replacement's active turn.
@@ -1537,6 +1564,8 @@ app.get("/debug", (_q, r) => r.json({
     recoveryAt: lastNativeRecoveryAt ? new Date(lastNativeRecoveryAt).toISOString() : null,
     freshModel: FRESH_SESSION_MODEL,
     awaitingFirstMessage: manualFreshPending,
+    runtimeRestored: persistedRuntimeUsable,
+    coldStartNeedsKelivo,
   },
   stream: { heartbeatMs: SSE_HEARTBEAT_MS },
   delivery: {
@@ -2372,12 +2401,12 @@ function submitTurn(text, images, sink, opts = {}) {
   // process from Telegram. The guard is presentation-only and never enters the
   // resident transcript.
   const channelWarning = channelTurnGuard(source, {
-    needsKelivoHistory: procNeedsHistory,
+    needsKelivoHistory: procNeedsHistory || coldStartNeedsKelivo,
     awaitingFreshKelivo: manualFreshPending,
   });
   if (channelWarning) {
     log("[channel] blocked Telegram until Kelivo restores continuity", {
-      procNeedsHistory, manualFreshPending,
+      procNeedsHistory, coldStartNeedsKelivo, manualFreshPending,
     });
     try { sink?.text?.(channelWarning); } catch {}
     try { sink?.finish?.(undefined, channelWarning); } catch {}

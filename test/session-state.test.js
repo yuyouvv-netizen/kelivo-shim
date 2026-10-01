@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   clearSessionState,
+  loadSessionBootstrap,
   loadSessionState,
   nativeResumeDefinitelyRejected,
   restoreMissingSessionTranscript,
@@ -44,6 +45,33 @@ test("native session state is atomic, scoped to its fingerprint, and clearable",
   assert.equal(loadSessionState(file, sessionFingerprint("opus", "changed")), null);
   assert.equal(clearSessionState(file), true);
   assert.equal(loadSessionState(file, fingerprint), null);
+});
+
+test("native session state persists the last Kelivo runtime identity for a Telegram cold start", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-session-bootstrap-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "state.json");
+  const fingerprint = sessionFingerprint("opus", "system");
+  const runtime = {
+    system: "private Kelivo worldbook",
+    model: "claude-opus-4-6",
+    effort: "high",
+  };
+
+  assert.equal(saveSessionState(file, { sessionId: SESSION_ID, fingerprint, runtime }), true);
+  assert.deepEqual(loadSessionBootstrap(file)?.runtime, runtime);
+  assert.deepEqual(loadSessionState(file, fingerprint)?.runtime, runtime);
+});
+
+test("legacy state remains resumable by fingerprint but requires Kelivo for runtime identity", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-session-legacy-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "state.json");
+  const fingerprint = sessionFingerprint("opus", "system");
+
+  assert.equal(saveSessionState(file, { sessionId: SESSION_ID, fingerprint }), true);
+  assert.equal(loadSessionBootstrap(file)?.runtime, null);
+  assert.equal(loadSessionState(file, fingerprint)?.sessionId, SESSION_ID);
 });
 
 test("malformed session IDs are never persisted or resumed", () => {

@@ -30,26 +30,48 @@ export function sessionFingerprint(model, systemPrompt) {
 }
 
 export function loadSessionState(file, fingerprint) {
+  const state = loadSessionBootstrap(file);
+  if (!state) return null;
+  if (state.fingerprint !== fingerprint) return null;
+  return state;
+}
+
+export function loadSessionBootstrap(file) {
   if (!file) return null;
   try {
     const state = JSON.parse(fs.readFileSync(file, "utf8"));
     if (state?.version !== 1 || !validSessionId(state.sessionId)) return null;
-    if (state.fingerprint !== fingerprint) return null;
-    return state;
+    if (typeof state.fingerprint !== "string" || !state.fingerprint) return null;
+    const runtime = state.runtime;
+    const validRuntime = runtime &&
+      typeof runtime.system === "string" && runtime.system.length <= 2_000_000 &&
+      typeof runtime.model === "string" && runtime.model.length > 0 && runtime.model.length <= 256 &&
+      typeof runtime.effort === "string" && runtime.effort.length > 0 && runtime.effort.length <= 32;
+    return { ...state, runtime: validRuntime ? runtime : null };
   } catch {
     return null;
   }
 }
 
-export function saveSessionState(file, { sessionId, fingerprint }) {
+export function saveSessionState(file, { sessionId, fingerprint, runtime }) {
   if (!file || !validSessionId(sessionId) || !fingerprint) return false;
   const dir = path.dirname(file);
   const temp = `${file}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(temp, JSON.stringify({
+    const state = {
       version: 1, sessionId, fingerprint, updatedAt: new Date().toISOString(),
-    }, null, 2) + "\n", { mode: 0o600 });
+    };
+    if (runtime && typeof runtime.system === "string" &&
+      typeof runtime.model === "string" && runtime.model &&
+      typeof runtime.effort === "string" && runtime.effort) {
+      state.runtime = {
+        system: runtime.system,
+        model: runtime.model,
+        effort: runtime.effort,
+      };
+    }
+    fs.writeFileSync(temp, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
     fs.renameSync(temp, file);
     return true;
   } catch {

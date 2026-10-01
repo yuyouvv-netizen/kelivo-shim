@@ -9,6 +9,7 @@
 
 import fs from "fs";
 import path from "path";
+import { markdownCodeContains, markdownCodeRanges } from "./markdown-code.js";
 
 // 宽松匹配:方括号接受半角 [] 与全角 【】混用,冒号半角/全角都认,标记内外多余空格都容忍。
 // 名字里不允许出现括号和换行——避免一个没闭合的标记把后面半篇回复都吃掉。
@@ -21,9 +22,11 @@ export function splitStickerSegments(text, has = () => true) {
   const segs = [];
   let buf = "";
   let last = 0;
+  const codeRanges = markdownCodeRanges(text);
   const flush = () => { if (buf) segs.push({ type: "text", content: buf }); buf = ""; };
   STICKER_RE.lastIndex = 0;
   for (let m; (m = STICKER_RE.exec(text)); ) {
+    if (markdownCodeContains(codeRanges, m.index)) continue;
     buf += text.slice(last, m.index);
     const name = m[1].trim();
     if (name && has(name)) { flush(); segs.push({ type: "sticker", content: name }); }

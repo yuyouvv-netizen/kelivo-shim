@@ -96,7 +96,7 @@ function telegramParagraphs(text) {
     if (trimmed.startsWith("```")) fenced = !fenced;
     // 虞克把独占一行的长破折号当视觉换行；Telegram 直接保留节奏，
     // 不把这条分隔线显示给又又。句内破折号和代码块内容不受影响。
-    if (!fenced && /^[—–]{2,}$/.test(trimmed)) continue;
+    if (!fenced && /^(?:[—–-]{2,}|[_*]{3,})$/.test(trimmed)) continue;
     if (!fenced && !trimmed) flush();
     else lines.push(line);
   }
@@ -155,7 +155,7 @@ function mergeSmallestNeighbours(parts, limit) {
   return merged;
 }
 
-export function telegramParagraphBubbles(value, max = 12, target = 260) {
+export function telegramParagraphBubbles(value, max = 12, target = 160) {
   const text = String(value || "").replace(/\r\n?/g, "\n").trim();
   if (!text) return [];
   const paragraphs = telegramParagraphs(text);
@@ -201,18 +201,38 @@ export function telegramParagraphBubbles(value, max = 12, target = 260) {
 
   // Pack short adjacent thoughts into one small conversational bubble. A
   // normal paragraph remains intact; oversized prose is split at sentence ends.
-  const bubbles = [];
-  let bubble = "";
+  const groups = [];
+  let group = [];
   for (const part of semanticParts) {
-    const joined = bubble ? `${bubble}\n\n${part}` : part;
-    if (bubble && joined.length > targetLength) {
-      bubbles.push(bubble);
-      bubble = part;
+    const joined = [...group, part].join("\n\n");
+    if (group.length && joined.length > targetLength) {
+      groups.push(group);
+      group = [part];
     } else {
-      bubble = joined;
+      group.push(part);
     }
   }
-  if (bubble) bubbles.push(bubble);
+  if (group.length) groups.push(group);
+
+  // Greedy packing can leave a tiny orphan at the end. Move only complete
+  // semantic parts, and only when doing so produces a more balanced pair.
+  if (groups.length > 1) {
+    const previous = groups.at(-2);
+    const last = groups.at(-1);
+    const lengthOf = (parts) => parts.join("\n\n").length;
+    while (previous.length > 1 && lengthOf(last) < Math.round(targetLength * 0.4)) {
+      const before = Math.abs(lengthOf(previous) - lengthOf(last));
+      const moved = previous.at(-1);
+      const nextPrevious = previous.slice(0, -1);
+      const nextLast = [moved, ...last];
+      const after = Math.abs(lengthOf(nextPrevious) - lengthOf(nextLast));
+      if (after >= before || lengthOf(nextLast) > hardMax) break;
+      previous.pop();
+      last.unshift(moved);
+    }
+  }
+
+  const bubbles = groups.map((parts) => parts.join("\n\n"));
 
   const limit = Math.max(1, Math.min(20, Number(max) || 12));
   return bubbles.length > limit ? mergeSmallestNeighbours(bubbles, limit) : bubbles;

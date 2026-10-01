@@ -6,6 +6,81 @@ export function telegramTextToHtml(value) {
   return escaped.replace(/\*\*([^*]+?)\*\*/g, "<b>$1</b>");
 }
 
+export function telegramTextToPlain(value) {
+  return String(value || "").replace(/\*\*([^*]+?)\*\*/g, "$1");
+}
+
+export function isTelegramHtmlParseError(response) {
+  if (response?.ok !== false || Number(response?.error_code) !== 400) return false;
+  return /parse entities|can't parse|unsupported start tag|unclosed start tag|wrong entity/i
+    .test(String(response?.description || ""));
+}
+
+function boldRanges(text) {
+  const ranges = [];
+  for (const match of text.matchAll(/\*\*[^*]+?\*\*/g)) {
+    ranges.push([match.index, match.index + match[0].length]);
+  }
+  return ranges;
+}
+
+function outsideBold(position, ranges) {
+  return !ranges.some(([start, end]) => position > start && position < end);
+}
+
+function sentenceBreakPositions(text, ranges = boldRanges(text)) {
+  const positions = [];
+  const endings = /[。！？!?；;](?:[”’"」』）)\]]|\*\*)*/g;
+  for (const match of text.matchAll(endings)) {
+    const position = match.index + match[0].length;
+    if (outsideBold(position, ranges)) positions.push(position);
+  }
+  return positions;
+}
+
+function lastFittingBreak(text, positions, limit) {
+  let chosen = 0;
+  for (const position of positions) {
+    if (position >= text.length) continue;
+    if (telegramTextToPlain(text.slice(0, position)).length <= limit) chosen = position;
+    else break;
+  }
+  return chosen;
+}
+
+// The reading layer normally keeps every bubble small. This is a final Bot API
+// transport guard: prefer paragraph/newline boundaries, then a complete
+// sentence, and never cut through a paired **bold** span.
+export function telegramTransportChunks(value, max = 4000) {
+  let remaining = String(value || "").replace(/\r\n?/g, "\n");
+  if (!remaining) return [];
+  const limit = Math.max(256, Math.min(4096, Number(max) || 4000));
+  const chunks = [];
+
+  while (telegramTextToPlain(remaining).length > limit) {
+    const ranges = boldRanges(remaining);
+    const paragraphBreaks = [...remaining.matchAll(/\n{2,}/g)]
+      .map((match) => match.index + match[0].length)
+      .filter((position) => outsideBold(position, ranges));
+    const lineBreaks = [...remaining.matchAll(/\n/g)]
+      .map((match) => match.index + 1)
+      .filter((position) => outsideBold(position, ranges));
+    const sentenceBreaks = sentenceBreakPositions(remaining, ranges);
+    const cut = lastFittingBreak(remaining, paragraphBreaks, limit)
+      || lastFittingBreak(remaining, lineBreaks, limit)
+      || lastFittingBreak(remaining, sentenceBreaks, limit);
+    if (!cut) {
+      const error = new RangeError("Telegram text has no safe transport boundary");
+      error.code = "TELEGRAM_UNBREAKABLE_TEXT";
+      throw error;
+    }
+    chunks.push(remaining.slice(0, cut));
+    remaining = remaining.slice(cut);
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 function telegramParagraphs(text) {
   const paragraphs = [];
   let lines = [];
@@ -31,8 +106,16 @@ function telegramParagraphs(text) {
 
 function splitLongParagraph(paragraph, target, hardMax) {
   if (paragraph.length <= target || paragraph.includes("```")) return [paragraph];
-  const sentences = paragraph.match(/[^。！？!?；;]+[。！？!?；;]+[”’"」』）)\]]*|[^。！？!?；;]+$/g)
-    ?.map((part) => part.trim()).filter(Boolean) || [paragraph];
+  const breaks = sentenceBreakPositions(paragraph);
+  const sentences = [];
+  let start = 0;
+  for (const end of breaks) {
+    const sentence = paragraph.slice(start, end).trim();
+    if (sentence) sentences.push(sentence);
+    start = end;
+  }
+  const tail = paragraph.slice(start).trim();
+  if (tail) sentences.push(tail);
   if (sentences.length <= 1) return [paragraph];
 
   const chunks = [];

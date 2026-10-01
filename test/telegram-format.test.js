@@ -1,13 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { telegramParagraphBubbles, telegramTextToHtml } from "../telegram-format.js";
+import {
+  isTelegramHtmlParseError,
+  telegramParagraphBubbles,
+  telegramTextToHtml,
+  telegramTextToPlain,
+  telegramTransportChunks,
+} from "../telegram-format.js";
 
 test("Telegram HTML renders common bold markers without trusting model HTML", () => {
   assert.equal(
     telegramTextToHtml("**同一个大脑** <不是标签> & 安全"),
     "<b>同一个大脑</b> &lt;不是标签&gt; &amp; 安全",
   );
+  assert.equal(telegramTextToPlain("**同一个大脑** <保留原文>"), "同一个大脑 <保留原文>");
+  assert.equal(isTelegramHtmlParseError({
+    ok: false, error_code: 400, description: "Bad Request: can't parse entities",
+  }), true);
+  assert.equal(isTelegramHtmlParseError({
+    ok: false, error_code: 429, description: "Too Many Requests",
+  }), false);
 });
 
 test("Telegram paragraph bubbles keep ordinary line breaks and pack short thoughts", () => {
@@ -44,6 +57,38 @@ test("Telegram paragraph bubbles split dense prose only at sentence endings", ()
   assert.ok(bubbles.length > 1);
   assert.ok(bubbles.every((bubble) => bubble.endsWith("。")));
   assert.equal(bubbles.join(""), source);
+});
+
+test("Telegram paragraph bubbles never split through a paired bold span", () => {
+  const source = `**${"粗体里的完整句子不会被从标记中间切开。".repeat(12)}**`;
+  assert.deepEqual(telegramParagraphBubbles(source, 12, 120), [source]);
+});
+
+test("Telegram transport prefers blank lines, preserves whitespace and protects bold", () => {
+  const first = "甲".repeat(180);
+  const second = "乙".repeat(180);
+  const third = "**加粗内容完整保留。**";
+  const source = `${first}\n\n${second}\n${third}`;
+  const chunks = telegramTransportChunks(source, 256);
+  assert.deepEqual(chunks, [`${first}\n\n`, `${second}\n${third}`]);
+  assert.equal(chunks.join(""), source);
+  assert.ok(chunks.every((chunk) => (chunk.match(/\*\*/g)?.length || 0) % 2 === 0));
+});
+
+test("Telegram transport falls back only at complete sentence endings", () => {
+  const sentence = "这一句会完整结束而且不会从中间被切开。";
+  const source = sentence.repeat(20);
+  const chunks = telegramTransportChunks(source, 256);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.endsWith("。")));
+  assert.equal(chunks.join(""), source);
+});
+
+test("Telegram transport rejects an impossible unbroken mega-line", () => {
+  assert.throws(
+    () => telegramTransportChunks("没".repeat(500), 256),
+    { code: "TELEGRAM_UNBREAKABLE_TEXT" },
+  );
 });
 
 test("Telegram paragraph bubbles balance excess parts instead of creating a giant tail", () => {

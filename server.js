@@ -32,7 +32,13 @@ import {
   telegramPairCodeMatches,
 } from "./telegram-state.js";
 import { telegramToolStatusText } from "./telegram-tools.js";
-import { telegramParagraphBubbles, telegramTextToHtml } from "./telegram-format.js";
+import {
+  isTelegramHtmlParseError,
+  telegramParagraphBubbles,
+  telegramTextToHtml,
+  telegramTextToPlain,
+  telegramTransportChunks,
+} from "./telegram-format.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { ImportHistoryStore } from "./import-history.js";
 import { archiveToolResultOk, continuityArchivePrompt } from "./archive.js";
@@ -1802,20 +1808,55 @@ async function tgSendThinking(think) {
 
 async function tgSendText(chatId, text) {
   if (!chatId || !text) return 0;
+  let chunks;
+  try {
+    chunks = telegramTransportChunks(text);
+  } catch (error) {
+    if (error?.code !== "TELEGRAM_UNBREAKABLE_TEXT") throw error;
+    // A single 4K+ line with no complete sentence cannot be represented as
+    // several Telegram messages without cutting a sentence. Preserve it as a
+    // UTF-8 attachment instead of corrupting or dropping the reply.
+    const form = new FormData();
+    form.set("chat_id", String(chatId));
+    form.set("caption", "正文过长且没有安全换行，已完整附上。");
+    form.set("document", new Blob([telegramTextToPlain(text)], { type: "text/plain;charset=utf-8" }), "reply.txt");
+    let response;
+    try {
+      const request = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendDocument`, {
+        method: "POST", body: form, signal: AbortSignal.timeout(65000),
+      });
+      response = await request.json();
+    } catch (sendError) {
+      throw markTgDeliveryUnknown(sendError);
+    }
+    if (!response.ok) throw tgDeliveryError("sendDocument", response);
+    return 1;
+  }
   let delivered = 0;
-  for (let i = 0; i < text.length; i += 4000) {  // TG 单条上限 4096
-    const chunk = text.slice(i, i + 4000);
+  for (const chunk of chunks) {
     const html = telegramTextToHtml(chunk);
-    const formatted = html.length <= 4096;
     let j;
     try {
       j = await tgApi("sendMessage", {
         chat_id: chatId,
-        text: formatted ? html : chunk.replace(/\*\*([^*]+?)\*\*/g, "$1"),
-        ...(formatted ? { parse_mode: "HTML" } : {}),
+        text: html,
+        parse_mode: "HTML",
       });
     } catch (error) {
       throw markTgDeliveryUnknown(error, delivered);
+    }
+    if (isTelegramHtmlParseError(j)) {
+      // Telegram explicitly rejected the first request, so it is known not to
+      // have been delivered. One plain-text retry cannot create a duplicate.
+      log("[tg-format-fallback] Telegram rejected HTML; sending plain text once");
+      try {
+        j = await tgApi("sendMessage", {
+          chat_id: chatId,
+          text: telegramTextToPlain(chunk),
+        });
+      } catch (error) {
+        throw markTgDeliveryUnknown(error, delivered);
+      }
     }
     if (!j.ok) throw tgDeliveryError("sendMessage", j, delivered);
     delivered += 1;
@@ -1882,9 +1923,9 @@ async function tgSendBubbles(text) {
   let delivered = 0;
   try {
     for (let i = 0; i < bubbles.length; i++) {
-      if (i) { // 第二条起:先亮"正在输入",按字数停顿,再发——手感像真人打字
+      if (i) { // 第二条起亮一下“正在输入”，固定极短停顿并严格顺序发送。
         tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {});
-        await tgSleep(Math.min(250 + bubbles[i].length * 5, 900));
+        await tgSleep(300);
       }
       delivered += await tgSend(bubbles[i]);
     }

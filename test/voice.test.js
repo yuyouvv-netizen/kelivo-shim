@@ -57,3 +57,13 @@ test("语音内容里的换行保留(交给 TTS 当停顿素材)", () => {
   const segs = splitVoiceSegments("[语音]Line one.\nLine two.[/语音]");
   assert.deepEqual(segs, [{ type: "voice", content: "Line one.\nLine two." }]);
 });
+
+test("代码里的语音标记只是示例,不会抽出孤立语音段", () => {
+  const raw = "示例：`[语音]...[/语音]`\n真的：[语音]I am here.[/语音]";
+  assert.deepEqual(splitVoiceSegments(raw), [
+    { type: "text", content: "示例：`[语音]...[/语音]`\n真的：" },
+    { type: "voice", content: "I am here." },
+  ]);
+  const fenced = "```\n[语音]...[/语音]\n```";
+  assert.deepEqual(splitVoiceSegments(fenced), [{ type: "text", content: fenced }]);
+});

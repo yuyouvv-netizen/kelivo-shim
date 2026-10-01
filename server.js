@@ -24,6 +24,14 @@ import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { diagnoseBirdMcp } from "./bird-mcp-diagnostic.js";
 import { splitVoiceSegments, ttsOgg } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
+import { channelTurnGuard, withChannelContext } from "./channel-context.js";
+import {
+  normalizeTelegramPairCode,
+  parseTelegramPairCommand,
+  TelegramStateStore,
+  telegramPairCodeMatches,
+} from "./telegram-state.js";
+import { telegramToolStatusText } from "./telegram-tools.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { ImportHistoryStore } from "./import-history.js";
 import { archiveToolResultOk, continuityArchivePrompt } from "./archive.js";
@@ -291,8 +299,7 @@ let lastCompactAt = null;
 let lastCompactPre = 0;
 
 function notifyMemory(text) {
-  if (TG_TOKEN && tgChatId) return tgSend(text).catch((e) => log("[tg-err]", e.message));
-  if (BARK_KEY) return barkPush(text).catch((e) => log("[bark-err]", e.message));
+  return sendProactive(text);
 }
 
 function currentWindowSessionId() {
@@ -968,6 +975,7 @@ function handleEvent(ev, sourceProc = proc) {
         if (cb.id) turn.toolNames.set(cb.id, toolName);
         turn.toolInputs[e.index] = { name: toolName, buf: "" };
         turnState.event("tool_start", { tool: toolName });
+        try { turn.sse?.toolStart?.(toolName); } catch {}
         if (turn.src === "wake" && turn.wakeHistoryId) {
           try { wakeHistory.addTool(turn.wakeHistoryId, toolName); }
           catch (error) { log("[wake-history] failed to record tool", error?.message || String(error)); }
@@ -1076,6 +1084,7 @@ function handleEvent(ev, sourceProc = proc) {
         status: block.is_error === true ? "error" : "returned",
         result: resultText.replace(/\s+/g, " ").trim(),
       });
+      try { turn.sse?.toolResult?.(toolName, block.is_error === true ? "error" : "returned"); } catch {}
     }
   }
   // 安全阀:letter_write 只有返回 `💌letter→… […]` 才算真正落盘。
@@ -1420,6 +1429,7 @@ registerWakeAdmin(app, {
     checkMin: WAKE_CHECK_MIN,
     idleMin: WAKE_IDLE_MIN,
     bark: !!BARK_KEY,
+    telegram: telegramProactiveReady(),
   }),
   setMode: (mode) => wakeMode.set(mode),
 });
@@ -1550,12 +1560,21 @@ app.get("/debug", (_q, r) => r.json({
     lastTimeoutSource: lastTurnTimeoutSource,
     lastInterruptAt: lastTurnInterruptAt ? new Date(lastTurnInterruptAt).toISOString() : null,
   },
+  telegram: {
+    enabled: !!TG_TOKEN,
+    connected: !!tgBotId,
+    proactiveEnabled: TG_PROACTIVE,
+    proactiveReady: telegramProactiveReady(),
+    toolStatus: TG_TOOL_STATUS,
+    pairCodeConfigured: !!TG_PAIR_CODE,
+    ...tgState.status(),
+  },
   voice: { ready: voiceReady(), model: voiceCfg.modelId, settings: voiceSettingsOf(voiceCfg) },
   ears: { ready: earsReady(), auth: !!EARS_TOKEN },   // 语音消息能否听出语气
   stickers: { count: stickerNames().length },         // 表情包图库有几张
   wake: {
     bark: !!BARK_KEY,
-    tg: !!TG_TOKEN, tgLocked: !!tgChatId,
+    tg: telegramProactiveReady(), tgLocked: !!tgChatId,
     mode: wakeMode.get(),
     activeHoursSingapore: wakeMode.activeHours(),
     checkMin: WAKE_CHECK_MIN,
@@ -1590,19 +1609,21 @@ async function barkPush(text) {
 function wakeTurn(idleUserMin) {
   const now = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
   const sinceSpokeMin = lastSpokeAt ? (Date.now() - lastSpokeAt) / 60000 : null;
-  const canTg = !!(TG_TOKEN && tgChatId);
+  const canTg = telegramProactiveReady();
   const sink = {
     text() {}, thinking() {},
     finish(_u, fullText) {
       const t = (fullText || "").replace(/‖/g, "\n").trim();
       if (!t || isSilentWakeText(t)) { log("[wake] silent"); return; }
       lastSpokeAt = Date.now();
-      if (canTg) tgSendReply(t).catch((e) => log("[tg-err]", e.message));
-      else if (BARK_KEY) barkPush(t).catch((e) => log("[bark-err]", e.message));
+      sendProactive(t).catch((e) => log("[proactive-err]", e.message));
     },
   };
   enqueue({
-    text: autonomousWakePrompt({ now, idleUserMin, sinceSpokeMin }),
+    text: autonomousWakePrompt({
+      now, idleUserMin, sinceSpokeMin,
+      delivery: canTg ? "Telegram" : "Bark",
+    }),
     images: [], system: spawnedSystem, sse: sink, newWindow: false, model: spawnedModel, src: "wake",
   });
 }
@@ -1683,33 +1704,132 @@ app.post("/voice/reset", (req, res) => {
 // ---- Telegram 前端(与 Kelivo 并行,同一个常驻进程=同一个他) --------------------
 // 收消息走 submitTurn 同一条队列;回复与自主发言直接 sendMessage——
 // Telegram bot 天生可主动开口,这是 Kelivo(纯请求-响应)做不到的。
-// TG_BOT_TOKEN 启用;TG_CHAT_ID 可预设,不设则第一个私聊自动锁定(之后只认这一个人)。
+// TG_BOT_TOKEN 启用。TG_CHAT_ID 可预设；否则必须用 TG_PAIR_CODE 完成一次私聊配对。
+// 配对身份与已接收 update_id 都写入 /persona：重启不重新认人，也不重复投递最后一条。
 const TG_TOKEN = process.env.TG_BOT_TOKEN || "";
-let tgChatId = +(process.env.TG_CHAT_ID || 0);
-let tgOffset = 0;
+const TG_CONFIGURED_CHAT_ID = process.env.TG_CHAT_ID || "";
+const TG_PAIR_CODE = normalizeTelegramPairCode(process.env.TG_PAIR_CODE);
+const TG_PROACTIVE = process.env.TG_PROACTIVE === "1";
+const TG_TOOL_STATUS = process.env.TG_TOOL_STATUS !== "0";
+const TG_STATE_FILE = process.env.TG_STATE_FILE || "/persona/telegram-state.json";
+const tgState = new TelegramStateStore({
+  file: TG_STATE_FILE,
+  configuredChatId: TG_CONFIGURED_CHAT_ID,
+  log,
+});
+let tgChatId = tgState.chatId();
+let tgOffset = tgState.nextOffset();
+let tgBotId = null;
 
 async function tgApi(method, payload) {
   const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/${method}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(65000),
   });
   return r.json();
 }
 const TG_THINKING = process.env.TG_THINKING !== "0"; // 思考链以折叠引用块发出,点开看;0 关闭
 const tgEsc = (x) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function telegramReady() {
+  return !!(TG_TOKEN && tgChatId);
+}
+
+function telegramProactiveReady() {
+  return TG_PROACTIVE && telegramReady();
+}
+
+function tgDeliveryError(method, response, delivered = 0) {
+  const error = new Error(`${method}: ${JSON.stringify(response).slice(0, 200)}`);
+  error.tgDelivered = delivered;
+  return error;
+}
+
+function addTgDelivered(error, delivered) {
+  if (error && typeof error === "object") {
+    error.tgDelivered = (Number(error.tgDelivered) || 0) + delivered;
+  }
+  return error;
+}
+
+function markTgDeliveryUnknown(error, delivered = 0) {
+  if (error && typeof error === "object") error.tgDeliveryUnknown = true;
+  // 请求已经离开本机却没拿到回执时，按“可能已送达”处理：不重试、不转发整段。
+  return addTgDelivered(error, delivered + 1);
+}
+
 async function tgSendThinking(think) {
-  if (!tgChatId || !think) return;
+  if (!tgChatId || !think) return 0;
   // 可折叠引用块:默认收起一行,点开展开——等价于 Kelivo 的 reasoning 视图
   const body = think.length > 3600 ? think.slice(0, 3600) + "…" : think;
   const j = await tgApi("sendMessage", { chat_id: tgChatId, parse_mode: "HTML",
     text: `<blockquote expandable>${tgEsc(body)}</blockquote>` });
-  if (!j.ok) log("[tg-think-err]", JSON.stringify(j).slice(0, 200));
+  if (!j.ok) throw tgDeliveryError("sendThinking", j);
+  return 1;
 }
-async function tgSend(text) {
-  if (!tgChatId || !text) return;
+
+async function tgSendText(chatId, text) {
+  if (!chatId || !text) return 0;
+  let delivered = 0;
   for (let i = 0; i < text.length; i += 4000) {  // TG 单条上限 4096
-    const j = await tgApi("sendMessage", { chat_id: tgChatId, text: text.slice(i, i + 4000) });
-    if (!j.ok) log("[tg-send-err]", JSON.stringify(j).slice(0, 200));
+    let j;
+    try {
+      j = await tgApi("sendMessage", { chat_id: chatId, text: text.slice(i, i + 4000) });
+    } catch (error) {
+      throw markTgDeliveryUnknown(error, delivered);
+    }
+    if (!j.ok) throw tgDeliveryError("sendMessage", j, delivered);
+    delivered += 1;
   }
+  return delivered;
+}
+
+async function tgSend(text) {
+  return tgSendText(tgChatId, text);
+}
+
+function createTgToolStatus() {
+  const names = [];
+  let errors = 0;
+  let messageId = null;
+  let disabled = !TG_TOOL_STATUS;
+  let lastQueuedText = "";
+  let chain = Promise.resolve();
+
+  const queueRender = (done) => {
+    if (disabled || !names.length) return;
+    const statusText = telegramToolStatusText(names, { done, errors });
+    if (statusText === lastQueuedText) return;
+    lastQueuedText = statusText;
+    chain = chain.then(async () => {
+      const method = messageId ? "editMessageText" : "sendMessage";
+      const payload = messageId
+        ? { chat_id: tgChatId, message_id: messageId, text: statusText }
+        : { chat_id: tgChatId, text: statusText };
+      const result = await tgApi(method, payload);
+      if (!result.ok) throw new Error(`${method}: ${JSON.stringify(result).slice(0, 160)}`);
+      if (!messageId) messageId = result.result?.message_id || null;
+    }).catch((error) => {
+      disabled = true; // 展示失败不重试，也绝不挡住正文
+      log("[tg-tool-status-err]", error?.message || String(error));
+    });
+  };
+
+  return {
+    start(name) {
+      if (!names.includes(name)) names.push(name);
+      queueRender(false);
+    },
+    result(_name, status) {
+      if (status === "error") errors += 1;
+    },
+    async finish() {
+      queueRender(true);
+      await chain;
+    },
+  };
 }
 // 分气泡:按换行把一轮回复拆成多条消息,一行一个气泡,像真人连发微信。
 // 气泡边界由 AI 自己的换行决定(人设本就习惯短句分行);上限防刷屏,超出并入最后一条。
@@ -1717,19 +1837,25 @@ const TG_SPLIT = process.env.TG_SPLIT !== "0";
 const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 8);
 const tgSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function tgSendBubbles(text) {
-  if (!tgChatId || !text) return;
+  if (!tgChatId || !text) return 0;
   if (!TG_SPLIT) return tgSend(text);
   const lines = text.split("\n").map((x) => x.trim()).filter(Boolean);
   if (lines.length <= 1) return tgSend(text);
   const bubbles = lines.slice(0, TG_SPLIT_MAX);
   if (lines.length > TG_SPLIT_MAX) bubbles[TG_SPLIT_MAX - 1] = lines.slice(TG_SPLIT_MAX - 1).join("\n");
-  for (let i = 0; i < bubbles.length; i++) {
-    if (i) { // 第二条起:先亮"正在输入",按字数停顿,再发——手感像真人打字
-      tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {});
-      await tgSleep(Math.min(500 + bubbles[i].length * 35, 2500));
+  let delivered = 0;
+  try {
+    for (let i = 0; i < bubbles.length; i++) {
+      if (i) { // 第二条起:先亮"正在输入",按字数停顿,再发——手感像真人打字
+        tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {});
+        await tgSleep(Math.min(500 + bubbles[i].length * 35, 2500));
+      }
+      delivered += await tgSend(bubbles[i]);
     }
-    await tgSend(bubbles[i]);
+  } catch (error) {
+    throw addTgDelivered(error, delivered);
   }
+  return delivered;
 }
 // 语音:回复里 [语音]English content[/语音] 的段落转 ElevenLabs TTS,
 // 以 Telegram 原生语音条(sendVoice)发出,与文字气泡按出现顺序混排。
@@ -1790,10 +1916,17 @@ async function tgSendVoice(ogg) {
   const fd = new FormData();
   fd.append("chat_id", String(tgChatId));
   fd.append("voice", new Blob([ogg], { type: "audio/ogg" }), "voice.ogg");
-  const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendVoice`,
-    { method: "POST", body: fd, signal: AbortSignal.timeout(60000) });
-  const j = await r.json();
+  let r;
+  let j;
+  try {
+    r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendVoice`,
+      { method: "POST", body: fd, signal: AbortSignal.timeout(60000) });
+    j = await r.json();
+  } catch (error) {
+    throw markTgDeliveryUnknown(error);
+  }
   if (!j.ok) throw new Error(`sendVoice: ${JSON.stringify(j).slice(0, 200)}`);
+  return 1;
 }
 
 // ---- 表情包:回复里的 [贴纸:名字] 发成原生贴纸 --------------------------------
@@ -1813,7 +1946,9 @@ async function tgSendSticker(name) {
   const e = stickers[name];
   if (!e) return false;
   if (e.file_id) {
-    const j = await tgApi("sendSticker", { chat_id: tgChatId, sticker: e.file_id });
+    let j;
+    try { j = await tgApi("sendSticker", { chat_id: tgChatId, sticker: e.file_id }); }
+    catch (error) { throw markTgDeliveryUnknown(error); }
     if (j.ok) return true;
     log("[sticker-err]", name, JSON.stringify(j).slice(0, 160));
     if (!e.file) return false;
@@ -1824,9 +1959,15 @@ async function tgSendSticker(name) {
   const fd = new FormData();
   fd.append("chat_id", String(tgChatId));
   fd.append("sticker", new Blob([fs.readFileSync(p)], { type: "image/webp" }), e.file);
-  const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendSticker`,
-    { method: "POST", body: fd, signal: AbortSignal.timeout(60000) });
-  const j = await r.json();
+  let r;
+  let j;
+  try {
+    r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendSticker`,
+      { method: "POST", body: fd, signal: AbortSignal.timeout(60000) });
+    j = await r.json();
+  } catch (error) {
+    throw markTgDeliveryUnknown(error);
+  }
   if (!j.ok) throw new Error(`sendSticker: ${JSON.stringify(j).slice(0, 200)}`);
   const fid = j.result?.sticker?.file_id;
   if (fid) { e.file_id = fid; saveStickers(STICKER_FILE, stickers, log); }
@@ -1836,31 +1977,63 @@ async function tgSendSticker(name) {
 // 一轮回复的统一出口:切语音/贴纸/文字段,按出现顺序发。
 // 贴纸只在文字段里找——语音段的内容整段送 TTS,不该被解析。
 async function tgSendReply(text) {
-  if (!tgChatId || !text) return;
+  if (!tgChatId || !text) return 0;
   const segs = [];
   for (const s of splitVoiceSegments(text)) {
     if (s.type === "text") segs.push(...splitStickerSegments(s.content, hasSticker));
     else segs.push(s);
   }
-  for (const seg of segs) {
-    if (!seg.content.trim()) continue;
-    if (seg.type === "sticker") {
-      try { if (await tgSendSticker(seg.content)) continue; }
-      catch (e) { log("[sticker-err]", seg.content, e.message); }
-      continue;                              // 发不出去就当没这张,不把标记吐给她看
+  let delivered = 0;
+  try {
+    for (const seg of segs) {
+      if (!seg.content.trim()) continue;
+      if (seg.type === "sticker") {
+        try {
+          if (await tgSendSticker(seg.content)) delivered += 1;
+        } catch (e) {
+          if (e?.tgDeliveryUnknown) throw e;
+          log("[sticker-err]", seg.content, e.message);
+        }
+        continue;                              // 发不出去就当没这张,不把标记吐给她看
+      }
+      if (seg.type === "voice" && voiceReady()) {
+        try {
+          tgApi("sendChatAction", { chat_id: tgChatId, action: "record_voice" }).catch(() => {});
+          delivered += await tgSendVoice(await ttsOgg({
+            text: seg.content, apiKey: EL_KEY, voiceId: voiceCfg.voiceId,
+            modelId: voiceCfg.modelId, voiceSettings: voiceSettingsOf(voiceCfg), log,
+          }));
+          continue;
+        } catch (e) {
+          if (e?.tgDeliveryUnknown) throw e; // 状态不明就停，不能再补一份文字造成重复
+          log("[voice-err]", e.message);
+        } // TTS 或 Telegram 明确拒绝时才落到下面的文字降级
+      }
+      delivered += await tgSendBubbles(seg.content);
     }
-    if (seg.type === "voice" && voiceReady()) {
-      try {
-        tgApi("sendChatAction", { chat_id: tgChatId, action: "record_voice" }).catch(() => {});
-        await tgSendVoice(await ttsOgg({
-          text: seg.content, apiKey: EL_KEY, voiceId: voiceCfg.voiceId,
-          modelId: voiceCfg.modelId, voiceSettings: voiceSettingsOf(voiceCfg), log,
-        }));
-        continue;
-      } catch (e) { log("[voice-err]", e.message); } // 落到下面的文字降级
-    }
-    await tgSendBubbles(seg.content);
+  } catch (error) {
+    throw addTgDelivered(error, delivered);
   }
+  return delivered;
+}
+
+// 主动消息优先进入 Telegram 时间线。只有 Telegram 一条都没成功送达时才走 Bark，
+// 避免半轮已到 TG 后又在 Bark 重复整段；宁可少一截，也不要重复两份。
+async function sendProactive(text) {
+  if (telegramProactiveReady()) {
+    try {
+      const delivered = await tgSendReply(text);
+      if (delivered > 0) return "telegram";
+    } catch (error) {
+      log("[tg-proactive-err]", error?.message || String(error));
+      if ((Number(error?.tgDelivered) || 0) > 0) return "telegram-partial";
+    }
+  }
+  if (BARK_KEY) {
+    await barkPush(text);
+    return "bark";
+  }
+  return "none";
 }
 
 async function tgFetchPhoto(m) {
@@ -1993,9 +2166,28 @@ app.post("/stickers/reload", (req, res) => {
 
 async function handleTgMessage(m) {
   if (!m.chat || m.chat.type !== "private") return;
-  if (!tgChatId) { tgChatId = m.chat.id; log("[tg] chat locked:", tgChatId); }
-  else if (m.chat.id !== tgChatId) return; // 单用户:只认锁定的那个人
   let text = (m.text || m.caption || "").trim();
+
+  if (!tgChatId) {
+    const pairCode = parseTelegramPairCommand(text);
+    if (!telegramPairCodeMatches(pairCode, TG_PAIR_CODE)) {
+      await tgSendText(m.chat.id, "这是私人机器人。请使用正确的配对链接打开我。");
+      return;
+    }
+    if (!tgState.pair(m.chat.id)) {
+      await tgSendText(m.chat.id, "配对信息没能安全保存，请稍后再试。");
+      return;
+    }
+    tgChatId = m.chat.id;
+    log("[tg] private chat paired");
+    await tgSend("✅ 已安全配对。以后重启也只认这个私聊。");
+    return;
+  }
+  if (m.chat.id !== tgChatId) return; // 单用户:只认持久化锁定的那个人
+  if (/^\/start(?:@[A-Za-z0-9_]+)?$/i.test(text)) {
+    await tgSend("已经连上了。直接和我说话就好。");
+    return;
+  }
   if (await stickerIntake(m, text)) return;   // 收集模式:给刚发的贴纸起个名,不进他的窗口
   const images = [];
   if (m.photo && m.photo.length) { const img = await tgFetchPhoto(m); if (img) images.push(img); }
@@ -2027,13 +2219,20 @@ async function handleTgMessage(m) {
   const typing = setInterval(() => tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {}), 4500);
   tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {});
   let think = "";
+  const toolStatus = createTgToolStatus();
   const sink = {
     text() {}, thinking(t) { if (TG_THINKING) think += t; },
+    toolStart(name) { toolStatus.start(name); },
+    toolResult(name, status) { toolStatus.result(name, status); },
     finish(_u, fullText) {
       clearInterval(typing);
       const t = (fullText || "").replace(/‖/g, "\n").trim();
       (async () => {
-        if (think.trim()) await tgSendThinking(think.trim());
+        await toolStatus.finish();
+        if (think.trim()) {
+          try { await tgSendThinking(think.trim()); }
+          catch (e) { log("[tg-think-err]", e.message); }
+        }
         await tgSendReply(t || "…");
       })().catch((e) => log("[tg-err]", e.message));
     },
@@ -2041,23 +2240,50 @@ async function handleTgMessage(m) {
   submitTurn(text, images, sink, { src: "telegram" });
 }
 async function tgPoll() {
-  log("[tg] long-poll started");
+  const me = await tgApi("getMe", {});
+  if (!me.ok || !me.result?.id) throw new Error(`getMe: ${JSON.stringify(me).slice(0, 200)}`);
+  tgBotId = Number(me.result.id);
+  if (!tgState.bindBot(tgBotId)) throw new Error("Telegram state is not writable");
+  tgChatId = tgState.chatId();
+  tgOffset = tgState.nextOffset();
+  if (!tgChatId && !TG_PAIR_CODE) {
+    log("[tg] disabled: set TG_CHAT_ID or TG_PAIR_CODE");
+    return;
+  }
+  log("[tg] long-poll started", { paired: !!tgChatId, offset: tgOffset });
   while (true) {
     try {
       const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getUpdates?timeout=50&offset=${tgOffset}`,
         { signal: AbortSignal.timeout(65000) });
       const j = await r.json();
       if (j.ok) for (const u of j.result) {
-        tgOffset = u.update_id + 1;
+        if (tgState.hasSeen(u.update_id)) {
+          tgOffset = tgState.nextOffset();
+          continue;
+        }
+        // 回执先落盘再处理：极端重启时宁可这一条空回，也绝不把同一句再喂给 Claude。
+        if (!tgState.acceptUpdate(u.update_id)) throw new Error("Telegram update receipt is not writable");
+        tgOffset = tgState.nextOffset();
         if (u.message) await handleTgMessage(u.message);
       }
+      else throw new Error(`getUpdates: ${JSON.stringify(j).slice(0, 200)}`);
     } catch (e) {
       log("[tg-poll-err]", e.message);
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
 }
-if (TG_TOKEN) tgPoll();
+if (TG_TOKEN) {
+  (async () => {
+    while (true) {
+      try { await tgPoll(); return; }
+      catch (e) {
+        log("[tg-start-err]", e.message);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+  })();
+}
 
 // ---- Apple Watch 健康数据中转 --------------------------------------------------
 // 手机快捷指令 POST 任意 JSON 到 /aw?key=<AW_KEY>;AI 用 WebFetch GET 同一地址读。
@@ -2130,6 +2356,7 @@ function timeStamp(prevUserAt) {
 // 运维命令。想换人由聊天外的操作完成(例如切换模型);日常故障则优先续接原 session。
 // Kelivo 与 Telegram 共用的进队逻辑:时间戳 → enqueue
 function submitTurn(text, images, sink, opts = {}) {
+  const source = opts.src || "kelivo";
   // A prepared official-chat package owns the next native turn. No Telegram,
   // wake, archive or ordinary request may create the fresh process first.
   if (importHistory.loadPending()) {
@@ -2139,10 +2366,28 @@ function submitTurn(text, images, sink, opts = {}) {
     try { sink?.finish?.(undefined, warning); } catch {}
     return false;
   }
+  // Telegram has no Kelivo-style request history to contribute if native
+  // resume and its verified backup are both unavailable. Keep the old chat as
+  // an explicit recovery hatch instead of silently opening a context-free
+  // process from Telegram. The guard is presentation-only and never enters the
+  // resident transcript.
+  const channelWarning = channelTurnGuard(source, {
+    needsKelivoHistory: procNeedsHistory,
+    awaitingFreshKelivo: manualFreshPending,
+  });
+  if (channelWarning) {
+    log("[channel] blocked Telegram until Kelivo restores continuity", {
+      procNeedsHistory, manualFreshPending,
+    });
+    try { sink?.text?.(channelWarning); } catch {}
+    try { sink?.finish?.(undefined, channelWarning); } catch {}
+    return false;
+  }
   const newWindow = false;
+  text = withChannelContext(text, source);
   if (TIME_STAMP) text = `${timeStamp(lastUserAt)}\n${text}`;
   lastUserAt = Date.now(); // 自主时间空闲计时基准
-  log("[turn]", { src: opts.src || "kelivo", len: text.length, imgs: images.length });
+  log("[turn]", { src: source, len: text.length, imgs: images.length });
   enqueue({
     text, images, system: opts.system ?? spawnedSystem, sse: sink, newWindow,
     model: opts.model || spawnedModel, effort: opts.effort || spawnedEffort,
@@ -2150,7 +2395,7 @@ function submitTurn(text, images, sink, opts = {}) {
     requestedEffort: opts.requestedEffort ?? null,
     effortSource: opts.effortSource || "server-default",
     thinkingType: opts.thinkingType || null,
-    recovery: opts.recovery, src: opts.src || "kelivo",
+    recovery: opts.recovery, src: source,
     requestKey: opts.requestKey || null,
   });
   return true;

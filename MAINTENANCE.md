@@ -1,8 +1,8 @@
 # 维护者须知(For maintainers & future Claude Code sessions)
 
-> 本仓库是**公开 OSS**。这里只写通用机制;部署细节、服务 ID、事故档案、避坑清单
-> 在 owner 的**私有仓库 `ob-backup` 的 `SYSTEM-HANDBOOK.md`** ——
-> 任何维护会话(尤其是新开的 Claude Code)**先去读那份完整手册再动手**。
+> 本仓库是**公开 OSS**。这里只写通用机制；部署细节、服务 ID、事故档案、避坑清单
+> 应另存 owner 私有手册。私有手册不可用时，以本文件、干净的远端 `main` 与改动前
+> 测试结果共同作为可核验基线，绝不猜测私密部署状态。
 
 ## 红线(违反会出事故)
 
@@ -37,7 +37,9 @@
   `THINK_EFFORT` 只在前端选择自动或未携带档位时作为兜底。
 - **降级恢复**(`history.js`/`procNeedsHistory`):只有原生 session 原件和同 session 副本均
   续接失败时,才在新进程第一条 Kelivo 消息中补送前端实际提供的全部历史(默认不再砍成
-  128 条,字符预算仍生效)。常驻进程正常聊天不重复喂。
+  128 条,字符预算仍生效)。常驻进程正常聊天不重复喂。Telegram 本身不携带这份前端
+  历史；处于降级恢复或手动 fresh 待首条消息时，TG 只显示回 Kelivo 恢复的提示，绝不
+  抢先创建失忆进程。提示不进入 transcript，也不自动重交用户消息。
 - **断流/卡死保护**(`sse.js`/`turn-watchdog.js`):SSE 立即 flush headers,静默工具期
   周期发送 comment heartbeat。五分钟无 Claude 事件时先发 stream-json `interrupt`
   只中止当前轮;宽限期仍无结果才杀进程,随后优先原生续接。限流状态等非模型事件不再
@@ -74,6 +76,13 @@
   首次上传后回写 `file_id`,之后重启/重部署直接复用。
   使用者在 Telegram 里发一个贴纸、下一句说「入库:名字」即可入库,
   「贴纸清单」看有哪些,「删除贴纸:名字」删——这些管理动作不进对话窗口。
+- **Telegram 单用户边界**(`telegram-state.js`):不再用“第一个私聊自动锁定”。预设
+  `TG_CHAT_ID`，或以 `TG_PAIR_CODE` 完成一次 `/start <code>` 配对；bot 身份、唯一
+  chat ID 与 update 回执原子写入 `/persona`。每条 update 先落回执再进 Claude，极端
+  重启时宁可该条空回也不重复提交。换 bot token 不继承旧配对。
+- **Telegram 分阶段搬家**:`TG_PROACTIVE=0` 时只测试普通收发，心跳/窗口通知仍走
+  Bark；正式验收后设为 `1` 才把主动消息送入 TG。TG 状态不明时不自动重试；只有确认
+  一条都未送达才允许 Bark 兜底，避免双份消息。
 - **临时状态栏**(`status.js`/`status-mcp.js`):手机只通过带独立
   `STATUS_WRITE_TOKEN` 的 `POST /status` 覆盖一条状态；正文原子写入
   `/persona/status/now.json`、不留历史、不进日志。Claude 侧只有本地 stdio

@@ -6,6 +6,7 @@ import path from "path";
 
 import {
   activeHoursForWakeMode,
+  autonomousWakeInstruction,
   autonomousWakePrompt,
   AUTONOMOUS_WAKE_INSTRUCTION,
   isSilentWakeText,
@@ -60,6 +61,17 @@ test("autonomous wake omits the previous-spoke clause until one is known", () =>
   });
   assert.match(prompt, /她已约 51 分钟没有消息。/);
   assert.doesNotMatch(prompt, /上次主动开口/);
+});
+
+test("Telegram-primary wakes describe the visible Telegram destination", () => {
+  assert.match(autonomousWakeInstruction("Telegram"), /通过 Telegram 聊天 送到又又手里/);
+  const prompt = autonomousWakePrompt({
+    now: "2026-09-30 13:00",
+    idleUserMin: 52,
+    delivery: "Telegram",
+  });
+  assert.match(prompt, /通过 Telegram 聊天 送到又又手里/);
+  assert.doesNotMatch(prompt, /通过 Bark 送到/);
 });
 
 test("wake mode defaults to the daytime Singapore window", () => {

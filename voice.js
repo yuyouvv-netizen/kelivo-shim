@@ -4,6 +4,7 @@
 // 其余照常发文字,顺序保持混排。任何环节失败由调用方降级为文字,内容不丢。
 
 import { spawn } from "child_process";
+import { markdownCodeContains, markdownCodeRanges } from "./markdown-code.js";
 
 // 宽松匹配:方括号接受半角 [] 与全角 【】 混用,斜杠接受半角/全角。
 // 未闭合的开标记匹配不上 → 原样当普通文本,不吞字。
@@ -20,8 +21,10 @@ const CJK_RE = /[㐀-䶿一-鿿぀-ヿ가-힯]/;
 export function splitVoiceSegments(text) {
   const segs = [];
   let last = 0;
+  const codeRanges = markdownCodeRanges(text);
   VOICE_RE.lastIndex = 0;
   for (let m; (m = VOICE_RE.exec(text)); ) {
+    if (markdownCodeContains(codeRanges, m.index)) continue;
     if (m.index > last) segs.push({ type: "text", content: text.slice(last, m.index) });
     const inner = m[1].trim();
     if (inner) segs.push({ type: CJK_RE.test(inner) ? "text" : "voice", content: inner });

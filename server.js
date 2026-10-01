@@ -32,6 +32,7 @@ import {
   telegramPairCodeMatches,
 } from "./telegram-state.js";
 import { telegramToolStatusText } from "./telegram-tools.js";
+import { telegramParagraphBubbles, telegramTextToHtml } from "./telegram-format.js";
 import { contentToText, recoveryTranscript, withRecoveredHistory } from "./history.js";
 import { ImportHistoryStore } from "./import-history.js";
 import { archiveToolResultOk, continuityArchivePrompt } from "./archive.js";
@@ -1803,9 +1804,16 @@ async function tgSendText(chatId, text) {
   if (!chatId || !text) return 0;
   let delivered = 0;
   for (let i = 0; i < text.length; i += 4000) {  // TG 单条上限 4096
+    const chunk = text.slice(i, i + 4000);
+    const html = telegramTextToHtml(chunk);
+    const formatted = html.length <= 4096;
     let j;
     try {
-      j = await tgApi("sendMessage", { chat_id: chatId, text: text.slice(i, i + 4000) });
+      j = await tgApi("sendMessage", {
+        chat_id: chatId,
+        text: formatted ? html : chunk.replace(/\*\*([^*]+?)\*\*/g, "$1"),
+        ...(formatted ? { parse_mode: "HTML" } : {}),
+      });
     } catch (error) {
       throw markTgDeliveryUnknown(error, delivered);
     }
@@ -1860,18 +1868,16 @@ function createTgToolStatus() {
     },
   };
 }
-// 分气泡:按换行把一轮回复拆成多条消息,一行一个气泡,像真人连发微信。
-// 气泡边界由 AI 自己的换行决定(人设本就习惯短句分行);上限防刷屏,超出并入最后一条。
-const TG_SPLIT = process.env.TG_SPLIT !== "0";
+// 默认一轮一个完整气泡，避免 Markdown 的普通换行把一句话切碎。
+// 显式设 TG_SPLIT=1 时才按空行分成完整段落；段内换行仍留在同一个气泡。
+const TG_SPLIT = process.env.TG_SPLIT === "1";
 const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 8);
 const tgSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function tgSendBubbles(text) {
   if (!tgChatId || !text) return 0;
   if (!TG_SPLIT) return tgSend(text);
-  const lines = text.split("\n").map((x) => x.trim()).filter(Boolean);
-  if (lines.length <= 1) return tgSend(text);
-  const bubbles = lines.slice(0, TG_SPLIT_MAX);
-  if (lines.length > TG_SPLIT_MAX) bubbles[TG_SPLIT_MAX - 1] = lines.slice(TG_SPLIT_MAX - 1).join("\n");
+  const bubbles = telegramParagraphBubbles(text, TG_SPLIT_MAX);
+  if (bubbles.length <= 1) return tgSend(text);
   let delivered = 0;
   try {
     for (let i = 0; i < bubbles.length; i++) {

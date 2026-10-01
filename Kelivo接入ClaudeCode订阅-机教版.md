@@ -493,7 +493,13 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `STATUS_WRITE_TOKEN` | (可选)给 iPhone 快捷指令单独生成的随机密钥 | 启用 `POST /status`；不要复用 `SHIM_KEY`，不要写进仓库或 URL 查询参数 |
 | `WAKE_IDLE_MIN` | `50` | 自主时间空闲阈值;`WAKE_CHECK_MIN` 为本地检查频率(默认10),实际约50-60分钟触发。默认新加坡时间06:00-24:00,可在手机 `/admin/wake` 热切换全天模式 |
 | `TG_BOT_TOKEN` | (可选)Telegram bot token | 启用 Telegram 前端:与 Kelivo 共用同一常驻进程,收发消息+自主发言直接进 TG 对话(bot 可主动开口,Kelivo 做不到)。@BotFather 创建 |
-| `TG_CHAT_ID` | (可选) | 预设 TG 会话;不设则第一个私聊自动锁定,之后只认这个人 |
+| `TG_CHAT_ID` | (可选) | 预设唯一 TG 私聊 ID；若不设，必须配置 `TG_PAIR_CODE`，不再信任“第一个私聊” |
+| `TG_PAIR_CODE` | (可选,建议 16–64 位随机字母数字/横线) | 未预设 `TG_CHAT_ID` 时的一次性私聊配对码；通过 `/start <code>` 配对，成功后身份持久化，不能提交仓库 |
+| `TG_PROACTIVE` | `0`(默认) | 装修验收期保持 `0`，自主心跳和窗口提醒继续走 Bark；正式搬家时改为 `1`，主动消息才进入 TG 时间线 |
+| `TG_STATE_FILE` | `/persona/telegram-state.json` | 私存 bot 身份、唯一 chat ID 与最后接收的 update_id；防止重启重新认人或重复投递，通常无需修改 |
+| `TG_THINKING` | `1`(默认) | 思考链作为 Telegram 可折叠引用块发送；`0` 关闭 |
+| `TG_SPLIT` | `1`(默认) | 按换行分成多个 TG 气泡；`0` 合并发送，`TG_SPLIT_MAX` 默认最多 8 个 |
+| `TG_TOOL_STATUS` | `1`(默认) | MCP/网页工具调用时显示一条会原地更新的简短状态；失败只关闭展示，不影响正文。`0` 关闭 |
 | `SOUL_ANCHOR` | (可选)覆盖默认会话定性锚点 | 对抗 claude -p 的助手腔/解离,代码已带默认值,见 §9 |
 | `TIME_STAMP` | `1`(默认开) | 每条消息开头注入【时间】行:新加坡时间+距上条消息间隔。AI 对时间的自估天天漂,记忆里的时间跟着错,这个直接喂真实时钟。`0` 关闭 |
 | `TIME_GAP_MIN` | `5` | 间隔小于这个分钟数时只给时间不报间隔,免得连发消息时啰嗦 |

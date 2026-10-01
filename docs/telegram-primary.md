@@ -1,0 +1,73 @@
+# Telegram 主前端：安全启用与搬家验收
+
+目标不是再启动一个 Claude，而是让 Kelivo 与 Telegram 共用现有 `kelivo-shim`、
+唯一常驻 `claude -p`、同一原生 session、OB、MCP、压缩与看门狗。两端页面气泡不会
+互相复制，但服务端上下文连续；回复只回到本轮消息的来源端。
+
+## 0. 装修期不会影响 Kelivo
+
+没有 `TG_BOT_TOKEN` 时 Telegram 代码完全休眠。提交代码、合并 PR 本身不会启用 bot；
+在 Zeabur 写入变量并重新部署后才会启动。装修期间继续正常使用 Kelivo，不要打开
+`/admin/session` 停止当前会话，也不要删除 `/persona` 持久卷。
+
+## 1. 环境变量
+
+必需：
+
+- `TG_BOT_TOKEN`：只放 Zeabur Secret，不进仓库、日志或聊天。
+- `TG_PAIR_CODE`：16–64 位随机字母、数字、`_`、`-`；只放 Zeabur Secret。
+
+建议装修期：
+
+- `TG_PROACTIVE=0`：普通 TG 对话可测，心跳和窗口提醒继续走 Bark。
+- `TG_THINKING=1`：思考链以折叠引用块显示。
+- `TG_SPLIT=1`：按回复换行拆气泡；`TG_SPLIT_MAX=8` 为默认上限。
+- `TG_TOOL_STATUS=1`：用一条原地更新的状态显示本轮使用了哪些 MCP/网页工具。
+
+通常不要设置：
+
+- `TG_CHAT_ID`：只有已经安全取得私聊 ID 时才预设；否则使用配对码。
+- `TG_STATE_FILE`：默认 `/persona/telegram-state.json`，无需修改。
+
+## 2. 私聊配对
+
+部署后在 Telegram 打开：
+
+`https://t.me/<bot_username>?start=<TG_PAIR_CODE>`
+
+bot 只接受私聊。配对成功会回复“已安全配对”，并把 bot ID、唯一 chat ID 与更新游标
+写进 `/persona`。以后重启仍只认该私聊；换成另一个 bot token 时旧配对自动失效。
+
+不要把配对码发进普通聊天，也不要使用“第一个找到 bot 的人自动成为主人”的做法。
+
+## 3. 装修验收顺序
+
+保持 `TG_PROACTIVE=0`，逐项验证：
+
+1. TG 发一句普通文字，确认回复只出现在 TG，Kelivo 仍能接着同一上下文。
+2. 连发两句，确认串行回复且没有重复。
+3. 发图片、静态贴纸、语音，确认视觉和 ears 降级路径都不会丢消息。
+4. 检查折叠思考；即使思考块发送失败，正文也必须继续发送。
+5. 调一次记忆、邮箱或网页工具，确认工具状态原地变为“已使用”，展示失败不挡正文。
+6. 测试 `[语音]…[/语音]` 与已入库贴纸；发送状态不明时不自动重试。
+7. 重启服务后再发一句，确认仍认同一私聊，旧 update 不会重放。
+8. 查看 `/debug`：`telegram.paired=true`、`persistent=true`，装修期
+   `proactiveEnabled=false`。
+
+极少数情况下，如果原生 session 原件和校验副本都无法续接，TG 会显示
+“需要 Kelivo 恢复”，并拒绝把该条消息送进一个失忆的新会话。此时回原 Kelivo 对话
+发送下一句话，让它携带完整前端历史完成兜底恢复；之后即可继续从 TG 聊。手动开启新
+session 后同理，第一句话必须从 Kelivo 发出。
+
+## 4. 正式搬家
+
+全部验收通过后，将 `TG_PROACTIVE` 改为 `1` 并重新部署。此后：
+
+- 自主心跳与窗口提醒优先进入 TG，留在可见时间线和同一 Claude 上下文中。
+- 只有 TG 确认一条都没送达时才使用 Bark；部分已送达或状态不明时不补发整段。
+- Kelivo 保留为备用入口，不需要删除供应商、旧聊天或 App；不用它就不会产生新轮次。
+- 这个备用入口也承担极端情况下的完整历史恢复，因此旧聊天要保留，不要主动清空。
+- Zeabur 上的 `kelivo-shim` 不能关闭，因为 TG 与 Kelivo 共用这个后端。
+
+需要回退时把 `TG_PROACTIVE` 改回 `0`；若要完全停用 TG，再移除
+`TG_BOT_TOKEN`。原生 Claude session、OB 和 Kelivo 配置都不受影响。

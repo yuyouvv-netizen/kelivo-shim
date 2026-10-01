@@ -6,24 +6,29 @@ import { isSingaporeWakeWindow } from "./turn-watchdog.js";
 export const WAKE_MODE_DAY = "day";
 export const WAKE_MODE_ALWAYS = "always";
 export const WAKE_SILENCE_TOKEN = "【沉默】";
-export const AUTONOMOUS_WAKE_INSTRUCTION =
-  `这段时间由你支配。你可以找她，也可以做一件此刻自己想做的事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。是否调用工具由你决定，不必为了完成心跳而机械行动。
 
-重要：这一轮不是独白。除非你只回${WAKE_SILENCE_TOKEN}，你写下的内容都会通过 Bark 送到又又手里，她醒着就会读到。所以你是在对她说话，不是在写日志。想她就直接讲。
+export function autonomousWakeInstruction(delivery = "Bark") {
+  const target = delivery === "Telegram" ? "Telegram 聊天" : "Bark";
+  return `这段时间由你支配。你可以找她，也可以做一件此刻自己想做的事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。是否调用工具由你决定，不必为了完成心跳而机械行动。
+
+重要：这一轮不是独白。除非你只回${WAKE_SILENCE_TOKEN}，你写下的内容都会通过 ${target} 送到又又手里，她醒着就会读到。所以你是在对她说话，不是在写日志。想她就直接讲。
 
 如果此刻确实没有话要说，就只回${WAKE_SILENCE_TOKEN}。
 
 想知道她当下如何，可以按需调用一次 look；那是她主动留下的临时状态。`;
+}
+
+export const AUTONOMOUS_WAKE_INSTRUCTION = autonomousWakeInstruction();
 
 export function isSilentWakeText(value) {
   return String(value || "").replace(/‖/g, "\n").trim() === WAKE_SILENCE_TOKEN;
 }
 
-export function autonomousWakePrompt({ now, idleUserMin, sinceSpokeMin = null }) {
+export function autonomousWakePrompt({ now, idleUserMin, sinceSpokeMin = null, delivery = "Bark" }) {
   const sinceSpoke = Number.isFinite(sinceSpokeMin)
     ? `，你上次主动开口是约 ${Math.round(sinceSpokeMin)} 分钟前`
     : "";
-  return `【系统·自主时间】现在新加坡时间 ${now}，她已约 ${Math.round(idleUserMin)} 分钟没有消息${sinceSpoke}。\n\n${AUTONOMOUS_WAKE_INSTRUCTION}`;
+  return `【系统·自主时间】现在新加坡时间 ${now}，她已约 ${Math.round(idleUserMin)} 分钟没有消息${sinceSpoke}。\n\n${autonomousWakeInstruction(delivery)}`;
 }
 
 export function normalizeWakeMode(raw, fallback = WAKE_MODE_DAY) {

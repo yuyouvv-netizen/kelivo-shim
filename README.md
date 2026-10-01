@@ -62,6 +62,9 @@
 | `compact-settings.js` | PreCompact 摘要与 SessionStart 压缩后记忆恢复流程 |
 | `compact-instructions.js` | 不含工具清单的自然摘要兜底 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |
+| `telegram-state.js` | Telegram 单用户安全配对、机器人身份绑定与 update 防重复回执；状态私存 `/persona` |
+| `telegram-tools.js` | Telegram 端的短工具名与实时工具状态文案，不暴露 MCP 管线细节 |
+| `channel-context.js` | 为每轮标注当前 Kelivo / Telegram 出口，避免 TG 专属格式串到备用前端 |
 | `entrypoint.sh` | 容器启动脚本(补装 claude 原生二进制等) |
 | `package.json` / `package-lock.json` | 精确锁定的运行依赖；不要把 Claude Code 改回 `^` 或 `latest` |
 | `.mcp.json.example` | MCP 工具清单模板,复制成 `.mcp.json` 填你的 |
@@ -70,6 +73,8 @@
 环境变量清单见机教版 §3.6。
 
 iPhone 状态栏的配置见 [`docs/status-bar-ios.md`](docs/status-bar-ios.md)。
+
+Telegram 主前端的安全启用与搬家验收见 [`docs/telegram-primary.md`](docs/telegram-primary.md)。
 
 ## ⚠️ 红线
 

@@ -12,6 +12,8 @@ test("Telegram turns advertise only Telegram-native presentation", () => {
   assert.match(result, /当前入口】Telegram/);
   assert.match(result, /\[语音\]/);
   assert.match(result, /\[贴纸:名字\]/);
+  assert.match(result, /\[碎碎念\]/);
+  assert.match(result, /不要为了展示功能机械使用/);
   assert.equal(result.endsWith("\n你好"), true);
 });
 
@@ -19,6 +21,7 @@ test("Kelivo turns explicitly suppress Telegram-only markers", () => {
   const result = withChannelContext("你好", "kelivo");
   assert.match(result, /当前入口】Kelivo/);
   assert.match(result, /不要使用 Telegram 专属/);
+  assert.match(result, /碎碎念标记/);
 });
 
 test("internal turns are not mislabeled as either chat frontend", () => {

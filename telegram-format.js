@@ -151,7 +151,7 @@ function mergeSmallestNeighbours(parts, limit) {
   return merged;
 }
 
-export function telegramParagraphBubbles(value, max = 12, target = 160) {
+export function telegramParagraphBubbles(value, max = 20, target = 160) {
   const text = String(value || "").replace(/\r\n?/g, "\n").trim();
   if (!text) return [];
   const paragraphs = telegramParagraphs(text);
@@ -194,7 +194,7 @@ export function telegramParagraphBubbles(value, max = 12, target = 160) {
     splitLongParagraph(paragraph, targetLength, hardMax)
   ));
 
-  const limit = Math.max(1, Math.min(20, Number(max) || 12));
+  const limit = Math.max(1, Math.min(20, Number(max) || 20));
   return semanticParts.length > limit
     ? mergeSmallestNeighbours(semanticParts, limit)
     : semanticParts;

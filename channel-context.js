@@ -16,12 +16,8 @@ export function withChannelContext(text, source) {
 
 export function channelTurnGuard(source, {
   needsKelivoHistory = false,
-  awaitingFreshKelivo = false,
 } = {}) {
   if (source !== "telegram") return "";
-  if (awaitingFreshKelivo) {
-    return "⚠️〔新会话在等 Kelivo〕请先回到 Kelivo 发送新会话的第一句话；完成后 Telegram 会继续共用这个会话。";
-  }
   if (needsKelivoHistory) {
     return "⚠️〔需要 Kelivo 恢复〕原生会话暂时无法续接。请回到原 Kelivo 对话发送下一句话，让它携带完整历史完成恢复；Telegram 不会擅自开启失忆的新会话。";
   }

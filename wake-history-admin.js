@@ -105,7 +105,7 @@ export function wakeHistoryPage(runs = []) {
 ${body}
 <a class="refresh" href="${BASE_PATH}">立即刷新</a>
 <p class="muted">页面只在打开或点击“立即刷新”时读取一次。查看记录不会给小克发送消息、触发心跳或占用上下文。</p>
-<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/window">窗口进度</a><a href="/admin/session">全新会话</a></p>`);
+<p class="links"><a href="/admin/wake">心跳开关</a><a href="/admin/window">窗口进度</a><a href="/admin/session">会话与模型</a></p>`);
 }
 
 export function registerWakeHistoryAdmin(app, {

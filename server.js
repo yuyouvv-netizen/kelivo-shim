@@ -17,6 +17,11 @@ import { registerClaudeOauthAdmin } from "./claude-oauth-admin.js";
 import { registerGmailOauthAdmin } from "./gmail-oauth-admin.js";
 import { registerImportHistoryAdmin } from "./import-history-admin.js";
 import { registerSessionAdmin } from "./session-admin.js";
+import {
+  clearFreshSessionState,
+  loadFreshSessionState,
+  saveFreshSessionState,
+} from "./fresh-session-state.js";
 import { registerWakeAdmin } from "./wake-admin.js";
 import { registerWakeHistoryAdmin } from "./wake-history-admin.js";
 import { registerWindowAdmin } from "./window-admin.js";
@@ -88,7 +93,7 @@ import {
   normalizeSystemPromptMode,
   systemPromptArgs,
 } from "./system-prompt.js";
-import { normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
+import { CLAUDE_EFFORT_LEVELS, normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
 import { configuredDisallowedTools } from "./tool-policy.js";
 import {
   isStopSequenceNotice,
@@ -136,6 +141,8 @@ const TURN_INTERRUPT_GRACE_MS = interruptGraceMsFromEnv(process.env.TURN_INTERRU
 const SSE_HEARTBEAT_MS = sseHeartbeatMsFromEnv(process.env.SSE_HEARTBEAT_MS);
 const SESSION_RESUME = process.env.SESSION_RESUME !== "0";
 const SESSION_STATE_FILE = process.env.SESSION_STATE_FILE || "/persona/claude-state/shim-session.json";
+const FRESH_SESSION_STATE_FILE = process.env.FRESH_SESSION_STATE_FILE ||
+  "/persona/claude-state/manual-fresh.json";
 const WINDOW_THRESHOLD_STATE_FILE = process.env.WINDOW_THRESHOLD_STATE_FILE ||
   "/persona/claude-state/window-thresholds.json";
 const IMPORT_HISTORY_DIR = process.env.IMPORT_HISTORY_DIR || "/persona/import-history";
@@ -411,12 +418,29 @@ const persistedRuntimeFingerprint = persistedRuntime ? sessionFingerprint(
 ) : null;
 const persistedRuntimeUsable = !!persistedRuntime &&
   persistedRuntimeFingerprint === persistedSessionBootstrap.fingerprint;
-let coldStartNeedsKelivo = !!persistedSessionBootstrap && !persistedRuntimeUsable;
+const persistedFreshCandidate = loadFreshSessionState(FRESH_SESSION_STATE_FILE);
+// Saving the confirmed native session and clearing the pending marker are two
+// filesystem operations. If the container dies between them, prefer the
+// confirmed matching runtime instead of opening a second fresh session.
+const persistedFreshAlreadyConsumed = !!persistedFreshCandidate && persistedRuntimeUsable &&
+  persistedFreshCandidate.model === persistedRuntime.model &&
+  normalizeClaudeEffort(persistedFreshCandidate.effort, persistedFreshCandidate.model, "low") ===
+    normalizeClaudeEffort(persistedRuntime.effort, persistedRuntime.model, "low") &&
+  persistedFreshCandidate.system === persistedRuntime.system;
+if (persistedFreshAlreadyConsumed) clearFreshSessionState(FRESH_SESSION_STATE_FILE);
+const persistedFreshSession = persistedFreshAlreadyConsumed ? null : persistedFreshCandidate;
+const persistedFreshUsable = !!persistedFreshSession && MODELS.includes(persistedFreshSession.model) &&
+  CLAUDE_EFFORT_LEVELS.has(persistedFreshSession.effort);
+let coldStartNeedsKelivo = !persistedFreshUsable && !!persistedSessionBootstrap && !persistedRuntimeUsable;
+let manualFreshPending = persistedFreshUsable;
 let proc = null, busy = false;
-let spawnedSystem = persistedRuntimeUsable ? persistedRuntime.system : "";
-let spawnedModel = persistedRuntimeUsable ? persistedRuntime.model : MODEL;
+let spawnedSystem = persistedFreshUsable ? persistedFreshSession.system
+  : persistedRuntimeUsable ? persistedRuntime.system : "";
+let spawnedModel = persistedFreshUsable ? persistedFreshSession.model
+  : persistedRuntimeUsable ? persistedRuntime.model : MODEL;
 let spawnedEffort = normalizeClaudeEffort(
-  persistedRuntimeUsable ? persistedRuntime.effort : null,
+  persistedFreshUsable ? persistedFreshSession.effort
+    : persistedRuntimeUsable ? persistedRuntime.effort : null,
   spawnedModel,
   effortFor(spawnedModel),
 );
@@ -425,7 +449,7 @@ const queue = [];
 let turn = null;
 let lastUsage = null; // 最近一轮的完整 usage(含缓存字段),/debug 查 // 当前在处理的 { sse, resolve, fullText, curThinking, thinkOpen, textOpen, idx, done }
 let lastAttestation = null;
-let skipHistoryOnNextSpawn = false;
+let skipHistoryOnNextSpawn = manualFreshPending;
 let procNeedsHistory = false;
 let lastRecoveryAt = null;
 let lastRecoveryMessages = 0;
@@ -433,8 +457,7 @@ let lastRecoveryChars = 0;
 let lastTurnTimeoutAt = null;
 let lastTurnTimeoutSource = null;
 let lastTurnInterruptAt = null;
-let forceFreshSession = false;
-let manualFreshPending = false;
+let forceFreshSession = manualFreshPending;
 let nativeSessionId = null;
 let nativeSessionFingerprint = null;
 let nativeSessionResumed = false;
@@ -578,6 +601,7 @@ function abortStalledTurn(stalled) {
 }
 
 function spawnClaude(kelivoSystem, model, effort) {
+  const startingManualFresh = manualFreshPending;
   manualFreshPending = false;
   // ?? 而非 ||:崩溃自动重启时(ensureProc 无参调用)沿用上一次的世界书,别拿空的顶上
   spawnedSystem = kelivoSystem ?? spawnedSystem;
@@ -677,6 +701,7 @@ function spawnClaude(kelivoSystem, model, effort) {
   p.kelivoSessionFingerprint = fingerprint;
   p.kelivoSessionResumed = !!resumeId;
   p.kelivoSessionConfirmed = false;
+  p.kelivoManualFresh = startingManualFresh;
   p.kelivoOutBuf = "";
   p.kelivoStderrBuf = "";
   nativeSessionId = resumeId || null;
@@ -693,6 +718,16 @@ function spawnClaude(kelivoSystem, model, effort) {
     if (proc && proc !== p) { log("[claude] stale process exited", code); return; }
     log("[claude] exited", code);
     proc = null; busy = false;
+    // A manual fresh session is not consumed until Claude confirms its new
+    // native session id. If the child exits before that point, keep the
+    // persisted choice pending and wait for another real message instead of
+    // falling into the unexpected-history recovery path.
+    if (p.kelivoManualFresh && !p.kelivoSessionConfirmed) {
+      manualFreshPending = true;
+      skipHistoryOnNextSpawn = true;
+      forceFreshSession = true;
+      procNeedsHistory = false;
+    }
     let restartDelayMs = 1500;
     const resumeUnconfirmed = p.kelivoSessionResumed && !p.kelivoSessionConfirmed;
     const resumeRejected = resumeUnconfirmed && nativeResumeDefinitelyRejected(p.kelivoStderrBuf);
@@ -777,7 +812,8 @@ function spawnClaude(kelivoSystem, model, effort) {
     if (shuttingDown) return finishShutdown();
     setTimeout(() => {
       if (manualFreshPending && !queue.length) {
-        log("[session] fresh 4.6 waiting for the first real Kelivo message");
+        log("[session] fresh runtime waiting for the first real Telegram or Kelivo message",
+          spawnedModel, spawnedEffort);
         return;
       }
       if (queue.length) pump(); else ensureProc();
@@ -793,9 +829,34 @@ function ensureProc(kelivoSystem, model, effort) {
   if (!proc) proc = spawnClaude(kelivoSystem, model, effort);
 }
 
-function startManualFreshSession() {
+function startManualFreshSession({ model, effort } = {}) {
   if (shuttingDown) return { ok: false, status: 503, error: "服务正在重启，请稍后再试。" };
   if (busy || turn || queue.length) return { ok: false, status: 409, error: "正在回复，请等这一轮结束后再切换。" };
+
+  const targetModel = model || FRESH_SESSION_MODEL;
+  if (!MODELS.includes(targetModel)) {
+    return { ok: false, status: 400, error: "这个模型不在当前可用清单里。" };
+  }
+  const requestedEffort = effort || effortFor(targetModel);
+  if (!CLAUDE_EFFORT_LEVELS.has(requestedEffort)) {
+    return { ok: false, status: 400, error: "未知的思考档位。" };
+  }
+  const targetEffort = normalizeClaudeEffort(requestedEffort, targetModel, effortFor(targetModel));
+
+  // The selected runtime must survive a platform restart between pressing the
+  // switch and sending the first real message. Persist it before releasing the
+  // old session; if persistence fails, leave the current session untouched.
+  if (!saveFreshSessionState(FRESH_SESSION_STATE_FILE, {
+    model: targetModel,
+    effort: targetEffort,
+    system: spawnedSystem,
+  })) {
+    return { ok: false, status: 500, error: "下一段会话配置没有安全保存，当前会话未放下。" };
+  }
+  if (!clearSessionState(SESSION_STATE_FILE)) {
+    clearFreshSessionState(FRESH_SESSION_STATE_FILE);
+    return { ok: false, status: 500, error: "当前会话指针没有安全释放，请稍后再试。" };
+  }
 
   // This is an explicit user decision, not a recovery path. Preserve one
   // rolling transcript copy when possible, but never require an OB archive.
@@ -803,7 +864,6 @@ function startManualFreshSession() {
   manualFreshPending = true;
   skipHistoryOnNextSpawn = true;
   forceFreshSession = true;
-  clearSessionState(SESSION_STATE_FILE);
   nativeSessionId = null;
   nativeSessionFingerprint = null;
   nativeSessionResumed = false;
@@ -811,14 +871,59 @@ function startManualFreshSession() {
   nativeRecoveryStage = 0;
   nativeTransientFailures = 0;
   procNeedsHistory = false;
-  spawnedModel = FRESH_SESSION_MODEL;
-  spawnedEffort = effortFor(FRESH_SESSION_MODEL);
+  spawnedModel = targetModel;
+  spawnedEffort = targetEffort;
 
   const old = proc;
   proc = null;
   try { old?.kill(); } catch {}
-  log("[session] current native session released; waiting for fresh", FRESH_SESSION_MODEL);
-  return { ok: true, model: FRESH_SESSION_MODEL };
+  log("[session] current native session released; waiting for fresh", targetModel, targetEffort);
+  return { ok: true, model: targetModel, effort: targetEffort };
+}
+
+function setSessionEffort(value) {
+  if (shuttingDown) return { ok: false, status: 503, error: "服务正在重启，请稍后再试。" };
+  if (busy || turn || queue.length) return { ok: false, status: 409, error: "正在回复，请等这一轮结束后再调整。" };
+  if (!CLAUDE_EFFORT_LEVELS.has(value)) {
+    return { ok: false, status: 400, error: "未知的思考档位。" };
+  }
+  const targetEffort = normalizeClaudeEffort(value, spawnedModel, effortFor(spawnedModel));
+
+  if (manualFreshPending) {
+    if (!saveFreshSessionState(FRESH_SESSION_STATE_FILE, {
+      model: spawnedModel,
+      effort: targetEffort,
+      system: spawnedSystem,
+    })) return { ok: false, status: 500, error: "下一段会话的档位没有安全保存。" };
+    spawnedEffort = targetEffort;
+    return { ok: true, effort: targetEffort, pending: true };
+  }
+  if (coldStartNeedsKelivo) {
+    return { ok: false, status: 409, error: "旧会话还需要 Kelivo 恢复，暂时不能调整档位。" };
+  }
+  if (targetEffort === spawnedEffort) return { ok: true, effort: targetEffort, unchanged: true };
+
+  const saved = loadSessionBootstrap(SESSION_STATE_FILE);
+  const sessionId = validSessionId(nativeSessionId) ? nativeSessionId : saved?.sessionId;
+  const fingerprint = nativeSessionFingerprint || saved?.fingerprint;
+  if (!validSessionId(sessionId) || !fingerprint) {
+    return { ok: false, status: 409, error: "当前还没有可续接的原生会话，请先发送一条消息。" };
+  }
+  if (!saveSessionState(SESSION_STATE_FILE, {
+    sessionId,
+    fingerprint,
+    runtime: { system: spawnedSystem, model: spawnedModel, effort: targetEffort },
+  })) return { ok: false, status: 500, error: "思考档位没有安全保存，当前会话未重启。" };
+
+  snapshotNativeSessionSoon();
+  const previous = spawnedEffort;
+  spawnedEffort = targetEffort;
+  const old = proc;
+  proc = null;
+  try { old?.kill(); } catch {}
+  if (old) ensureProc(spawnedSystem, spawnedModel, spawnedEffort);
+  log("[claude] applying admin effort", previous, "->", targetEffort);
+  return { ok: true, effort: targetEffort };
 }
 
 function onStdout(sourceProc, chunk) {
@@ -958,15 +1063,24 @@ function handleEvent(ev, sourceProc = proc) {
     if (firstConfirmation) {
       restoreWindowThresholdState(ev.session_id, sourceProc.kelivoSessionResumed);
     }
-    if (firstConfirmation && !saveSessionState(SESSION_STATE_FILE, {
-      sessionId: nativeSessionId,
-      fingerprint: nativeSessionFingerprint,
-      runtime: {
-        system: spawnedSystem,
-        model: spawnedModel,
-        effort: spawnedEffort,
-      },
-    })) log("[session] WARNING: could not persist native session state");
+    let sessionSaved = true;
+    if (firstConfirmation) {
+      sessionSaved = saveSessionState(SESSION_STATE_FILE, {
+        sessionId: nativeSessionId,
+        fingerprint: nativeSessionFingerprint,
+        runtime: {
+          system: spawnedSystem,
+          model: spawnedModel,
+          effort: spawnedEffort,
+        },
+      });
+      if (!sessionSaved) log("[session] WARNING: could not persist native session state");
+    }
+    if (firstConfirmation && sourceProc.kelivoManualFresh && sessionSaved) {
+      if (!clearFreshSessionState(FRESH_SESSION_STATE_FILE)) {
+        log("[session] WARNING: could not clear pending fresh-session state");
+      } else sourceProc.kelivoManualFresh = false;
+    }
     if (firstConfirmation) coldStartNeedsKelivo = false;
   }
   // A killed process can flush a final result after its replacement starts.
@@ -1447,11 +1561,15 @@ registerSessionAdmin(app, {
   urlencoded: express.urlencoded,
   log,
   getStatus: () => ({
-    model: manualFreshPending ? FRESH_SESSION_MODEL : spawnedModel,
+    model: spawnedModel,
+    effort: spawnedEffort,
+    models: MODELS,
+    efforts: [...CLAUDE_EFFORT_LEVELS],
     busy: busy || !!turn || queue.length > 0,
     awaitingFirstMessage: manualFreshPending,
   }),
   startFreshSession: startManualFreshSession,
+  setEffort: setSessionEffort,
 });
 registerWakeAdmin(app, {
   shimKey: SHIM_KEY,
@@ -1569,7 +1687,9 @@ app.get("/debug", (_q, r) => r.json({
     confirmed: !!proc?.kelivoSessionConfirmed,
     recoveryMode: lastNativeRecoveryMode,
     recoveryAt: lastNativeRecoveryAt ? new Date(lastNativeRecoveryAt).toISOString() : null,
-    freshModel: FRESH_SESSION_MODEL,
+    model: spawnedModel,
+    effort: spawnedEffort,
+    freshModel: manualFreshPending ? spawnedModel : FRESH_SESSION_MODEL,
     awaitingFirstMessage: manualFreshPending,
     runtimeRestored: persistedRuntimeUsable,
     coldStartNeedsKelivo,
@@ -1912,7 +2032,7 @@ function createTgToolStatus() {
 // 默认一轮一个完整气泡；TG_SPLIT=1 开启“微信式”小段气泡。
 // 空行分开的自然段各自成泡；长段只在句末继续拆，不会生硬切句。
 const TG_SPLIT = process.env.TG_SPLIT === "1";
-const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 12);
+const TG_SPLIT_MAX = +(process.env.TG_SPLIT_MAX || 20);
 const TG_SPLIT_TARGET = +(process.env.TG_SPLIT_TARGET || 160);
 const tgSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function tgSendBubbles(text) {
@@ -2446,15 +2566,16 @@ function submitTurn(text, images, sink, opts = {}) {
   // Telegram has no Kelivo-style request history to contribute if native
   // resume and its verified backup are both unavailable. Keep the old chat as
   // an explicit recovery hatch instead of silently opening a context-free
-  // process from Telegram. The guard is presentation-only and never enters the
-  // resident transcript.
+  // process from Telegram. An explicit manual fresh-session request is
+  // different: it intentionally starts clean and persists its target runtime,
+  // so its first real message may safely arrive through Telegram. The guard is
+  // presentation-only and never enters the resident transcript.
   const channelWarning = channelTurnGuard(source, {
     needsKelivoHistory: procNeedsHistory || coldStartNeedsKelivo,
-    awaitingFreshKelivo: manualFreshPending,
   });
   if (channelWarning) {
     log("[channel] blocked Telegram until Kelivo restores continuity", {
-      procNeedsHistory, coldStartNeedsKelivo, manualFreshPending,
+      procNeedsHistory, coldStartNeedsKelivo,
     });
     try { sink?.text?.(channelWarning); } catch {}
     try { sink?.finish?.(undefined, channelWarning); } catch {}
@@ -2527,12 +2648,28 @@ function handleMessages(req, res) {
 
   const images = extractImages(currentMessages);
   const system = systemToText(body.system);
+  // An explicit manual-fresh choice wins over the stale model/effort fields
+  // that an existing Kelivo provider may still attach to its first request.
+  // Once the new session is confirmed, ordinary Kelivo controls work again.
+  const pendingManualRuntime = manualFreshPending;
   // Kelivo 选的模型;不在名单里(或没传)就沿用当前模型
-  const model = MODELS.includes(body.model) ? body.model : spawnedModel;
+  const model = pendingManualRuntime
+    ? spawnedModel
+    : MODELS.includes(body.model) ? body.model : spawnedModel;
   // Kelivo 的 Claude 路径把“轻度/中度/重度…”放在
   // output_config.effort；旧版固定预算也兼容。这个值必须一路传到
   // claude --effort，不能只停留在手机界面。
-  const reasoning = reasoningForRequest(body, model, effortFor(model));
+  // A runtime effort chosen in the protected admin page remains the default
+  // for Telegram and for Kelivo requests that do not explicitly carry a
+  // level. An explicit Kelivo output_config still wins for that turn.
+  const fallbackEffort = model === spawnedModel ? spawnedEffort : effortFor(model);
+  const reasoning = pendingManualRuntime ? {
+    requested: typeof body?.output_config?.effort === "string"
+      ? body.output_config.effort : null,
+    effective: spawnedEffort,
+    source: "admin-fresh-session",
+    thinkingType: typeof body?.thinking?.type === "string" ? body.thinking.type : null,
+  } : reasoningForRequest(body, model, fallbackEffort);
   // Keep the request identity based on the actual Kelivo request. The imported
   // prefix is one-shot, but a phone reconnect must still reattach to or replay
   // the same first turn instead of submitting it a second time.

@@ -47,6 +47,12 @@ test("Telegram paragraph bubbles preserve a sequence of conversational paragraph
   );
 });
 
+test("Telegram paragraph bubbles allow up to twenty bubbles by default", () => {
+  const paragraphs = Array.from({ length: 24 }, (_, index) => `第 ${index + 1} 个完整段落。`);
+  assert.equal(telegramParagraphBubbles(paragraphs.join("\n\n")).length, 20);
+  assert.equal(telegramParagraphBubbles(paragraphs.join("\n\n"), 99).length, 20);
+});
+
 test("Telegram paragraph bubbles do not emit standalone punctuation and respect the cap", () => {
   const first = "第一段没有结束所以这里仍然不能切开".repeat(8);
   const source = `${first}\n\n...\n\n直到这里才结束。\n\n——\n\n第二段已经完整结束。\n\n第三段也完整结束。`;

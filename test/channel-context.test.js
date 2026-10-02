@@ -28,7 +28,10 @@ test("internal turns are not mislabeled as either chat frontend", () => {
 
 test("Telegram cannot create a memoryless fallback session", () => {
   assert.match(channelTurnGuard("telegram", { needsKelivoHistory: true }), /需要 Kelivo 恢复/);
-  assert.match(channelTurnGuard("telegram", { awaitingFreshKelivo: true }), /新会话在等 Kelivo/);
   assert.equal(channelTurnGuard("kelivo", { needsKelivoHistory: true }), "");
   assert.equal(channelTurnGuard("telegram"), "");
+});
+
+test("an explicitly released fresh session may start from Telegram", () => {
+  assert.equal(channelTurnGuard("telegram", { awaitingFreshKelivo: true }), "");
 });

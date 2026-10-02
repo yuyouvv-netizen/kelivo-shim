@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -30,6 +31,12 @@ test("Kelivo effort reaches Claude Code and the phone receipt uses upstream evid
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kelivo-attestation-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const argsFile = path.join(dir, "claude-args.jsonl");
+  const fakeClaudeBin = path.join(dir, "fake-claude");
+  fs.writeFileSync(
+    fakeClaudeBin,
+    `#!/usr/bin/env node\nimport ${JSON.stringify(pathToFileURL(fakeClaude).href)};\n`,
+    { mode: 0o700 },
+  );
   const port = await freePort();
   const child = spawn(process.execPath, [path.join(root, "server.js")], {
     cwd: root,
@@ -37,7 +44,7 @@ test("Kelivo effort reaches Claude Code and the phone receipt uses upstream evid
       ...process.env,
       PORT: String(port),
       SHIM_KEY: "secret-key",
-      CLAUDE_BIN: fakeClaude,
+      CLAUDE_BIN: fakeClaudeBin,
       FAKE_CLAUDE_ARGS_FILE: argsFile,
       FAKE_CLAUDE_THINKING: "1",
       TURN_STATE_DIR: path.join(dir, "turn-state"),

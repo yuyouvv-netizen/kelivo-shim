@@ -44,7 +44,7 @@ export function splitTelegramCardSegments(value, maxCards = 4) {
   return segments.length ? segments : [{ type: "text", content: source }];
 }
 
-export function telegramCardPreview(value, max = 92) {
+export function telegramCardPreview(value, max = 36) {
   const clean = String(value || "")
     .replace(/\*\*/g, "")
     .replace(/[`#>]/g, "")

@@ -22,7 +22,7 @@ import { registerWakeHistoryAdmin } from "./wake-history-admin.js";
 import { registerWindowAdmin } from "./window-admin.js";
 import { diagnoseStoredGmailAuth } from "./gmail-auth-diagnostic.js";
 import { diagnoseBirdMcp } from "./bird-mcp-diagnostic.js";
-import { splitVoiceSegments, ttsOgg } from "./voice.js";
+import { splitVoiceSegments, ttsVoiceAudio, voiceFallbackText } from "./voice.js";
 import { splitStickerSegments, loadStickers, saveStickers } from "./stickers.js";
 import { channelTurnGuard, withChannelContext } from "./channel-context.js";
 import {
@@ -1605,7 +1605,10 @@ app.get("/debug", (_q, r) => r.json({
     pairCodeConfigured: !!TG_PAIR_CODE,
     ...tgState.status(),
   },
-  voice: { ready: voiceReady(), model: voiceCfg.modelId, settings: voiceSettingsOf(voiceCfg) },
+  voice: {
+    ready: voiceReady(), provider: voiceCfg.provider, model: voiceCfg.modelId,
+    settings: voiceSettingsOf(voiceCfg),
+  },
   ears: { ready: earsReady(), auth: !!EARS_TOKEN },   // 语音消息能否听出语气
   stickers: { count: stickerNames().length },         // 表情包图库有几张
   wake: {
@@ -1703,7 +1706,8 @@ app.post("/hb", (req, res) => {
 
 // ---- 音色热更新:换音色/调参数不用重启(= 不换窗口) --------------------------
 // GET  /voice?key=<SHIM_KEY>  看当前配置
-// POST /voice?key=<SHIM_KEY>  {"voiceId":"...","speed":0.9,...} 改哪项传哪项,立即生效
+// POST /voice?key=<SHIM_KEY>  {"voiceId":"...","speed":0.95,"pitch":1}
+//                              改哪项传哪项,立即生效
 // POST /voice/reset?key=...   丢弃覆盖,退回环境变量的配置
 const voiceAuth = (req, res) =>
   !SHIM_KEY || (req.query.key || req.get("x-api-key")) === SHIM_KEY
@@ -1934,65 +1938,67 @@ async function tgSendBubbles(text) {
   }
   return delivered;
 }
-// 语音:回复里 [语音]English content[/语音] 的段落转 ElevenLabs TTS,
+// 语音:回复里 [语音]…[/语音] 的中英文段落转 MiniMax TTS,
 // 以 Telegram 原生语音条(sendVoice)发出,与文字气泡按出现顺序混排。
-// 未配 key/voice_id、额度耗尽、API 报错、转码失败 → 该段原样降级为文字,内容不丢。
-const EL_KEY = process.env.ELEVENLABS_API_KEY || "";
+// 未配 key/voice_id、额度耗尽、API 报错 → 该段降级为干净文字,内容不丢。
+const MINIMAX_KEY = process.env.MINIMAX_API_KEY || "";
+const MINIMAX_API_HOST = process.env.MINIMAX_API_HOST || "https://api.minimax.io";
 
 // 音色与渲染配方:**运行时可改,不必重启**。
 // 为什么要这样:改 Zeabur 环境变量会重启容器。而挑音色、调语速这种事
 // 天然要反复试听微调,每试一次换一次窗口的代价无法接受。所以配置存在
 // /persona/voice.json(持久卷,换容器不丢),用 POST /voice 热改,即时生效。
-// 优先级:voice.json > 环境变量 > 代码默认。
-// stability 低→语调起伏大更松弛;similarity 高→贴原始样本质感;style 高→磁性/玩味,过高会失控。
+// 优先级:voice.json > 环境变量 > 代码默认。以后换音色只改 voiceId 即可。
 const clamp = (v, lo, hi, dflt) => {
   const n = +v;
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
 };
 const VOICE_CFG_FILE = "/persona/voice.json";
-
 function envVoiceCfg() {
   return {
-    voiceId: process.env.ELEVENLABS_VOICE_ID || "",
-    modelId: process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2",
-    speed: clamp(process.env.VOICE_SPEED, 0.7, 1.2, 0.85),
-    stability: clamp(process.env.VOICE_STABILITY, 0, 1, 0.45),
-    similarity_boost: clamp(process.env.VOICE_SIMILARITY, 0, 1, 0.95),
-    style: clamp(process.env.VOICE_STYLE, 0, 1, 0.35),
-    use_speaker_boost: process.env.VOICE_SPEAKER_BOOST !== "0",
+    provider: "minimax",
+    voiceId: process.env.MINIMAX_VOICE_ID || "",
+    modelId: process.env.MINIMAX_MODEL_ID || "speech-2.8-hd",
+    speed: clamp(process.env.VOICE_SPEED, 0.5, 2, 1),
+    vol: clamp(process.env.VOICE_VOLUME, 0.1, 10, 1),
+    pitch: clamp(process.env.VOICE_PITCH, -12, 12, 0),
   };
 }
 
 // 只认白名单字段并逐项夹到合法区间——避免把非法值写进去,下次开机就起不来。
 function sanitizeVoiceCfg(patch, base) {
   const out = { ...base };
+  out.provider = "minimax";
   if (typeof patch.voiceId === "string" && patch.voiceId.trim()) out.voiceId = patch.voiceId.trim();
   if (typeof patch.modelId === "string" && patch.modelId.trim()) out.modelId = patch.modelId.trim();
-  if ("speed" in patch) out.speed = clamp(patch.speed, 0.7, 1.2, base.speed);
-  if ("stability" in patch) out.stability = clamp(patch.stability, 0, 1, base.stability);
-  if ("similarity_boost" in patch) out.similarity_boost = clamp(patch.similarity_boost, 0, 1, base.similarity_boost);
-  if ("style" in patch) out.style = clamp(patch.style, 0, 1, base.style);
-  if ("use_speaker_boost" in patch) out.use_speaker_boost = !!patch.use_speaker_boost;
+  if ("speed" in patch) out.speed = clamp(patch.speed, 0.5, 2, base.speed);
+  if ("vol" in patch) out.vol = clamp(patch.vol, 0.1, 10, base.vol);
+  if ("pitch" in patch) out.pitch = clamp(patch.pitch, -12, 12, base.pitch);
   return out;
 }
 
 let voiceCfg = envVoiceCfg();
 try {
   const saved = JSON.parse(fs.readFileSync(VOICE_CFG_FILE, "utf8"));
-  voiceCfg = sanitizeVoiceCfg(saved, voiceCfg);
-  log("[voice] loaded override from", VOICE_CFG_FILE, "voiceId=", voiceCfg.voiceId.slice(0, 6) + "…");
+  // 旧 ElevenLabs 配置也叫 voice.json。没有 provider 的旧文件直接忽略，
+  // 防止把 ElevenLabs voice id 误发给 MiniMax。
+  if (saved?.provider === "minimax") {
+    voiceCfg = sanitizeVoiceCfg(saved, voiceCfg);
+    log("[voice] loaded override from", VOICE_CFG_FILE, "voiceId=", voiceCfg.voiceId.slice(0, 6) + "…");
+  } else {
+    log("[voice] ignored legacy non-MiniMax override in", VOICE_CFG_FILE);
+  }
 } catch { /* 没有覆盖文件就用 env,正常情况 */ }
 
 const voiceSettingsOf = (c) => ({
-  speed: c.speed, stability: c.stability, similarity_boost: c.similarity_boost,
-  style: c.style, use_speaker_boost: c.use_speaker_boost,
+  speed: c.speed, vol: c.vol, pitch: c.pitch,
 });
-const voiceReady = () => !!(EL_KEY && voiceCfg.voiceId);
+const voiceReady = () => !!(MINIMAX_KEY && voiceCfg.voiceId);
 
-async function tgSendVoice(ogg) {
+async function tgSendVoice(audio) {
   const fd = new FormData();
   fd.append("chat_id", String(tgChatId));
-  fd.append("voice", new Blob([ogg], { type: "audio/ogg" }), "voice.ogg");
+  fd.append("voice", new Blob([audio.data], { type: audio.mimeType }), audio.filename);
   let r;
   let j;
   try {
@@ -2076,8 +2082,9 @@ async function tgSendReply(text) {
       if (seg.type === "voice" && voiceReady()) {
         try {
           tgApi("sendChatAction", { chat_id: tgChatId, action: "record_voice" }).catch(() => {});
-          delivered += await tgSendVoice(await ttsOgg({
-            text: seg.content, apiKey: EL_KEY, voiceId: voiceCfg.voiceId,
+          delivered += await tgSendVoice(await ttsVoiceAudio({
+            text: seg.content, apiKey: MINIMAX_KEY, apiHost: MINIMAX_API_HOST,
+            voiceId: voiceCfg.voiceId,
             modelId: voiceCfg.modelId, voiceSettings: voiceSettingsOf(voiceCfg), log,
           }));
           continue;
@@ -2086,7 +2093,8 @@ async function tgSendReply(text) {
           log("[voice-err]", e.message);
         } // TTS 或 Telegram 明确拒绝时才落到下面的文字降级
       }
-      delivered += await tgSendBubbles(seg.content);
+      const fallback = seg.type === "voice" ? voiceFallbackText(seg.content) : seg.content;
+      if (fallback.trim()) delivered += await tgSendBubbles(fallback);
     }
   } catch (error) {
     throw addTgDelivered(error, delivered);

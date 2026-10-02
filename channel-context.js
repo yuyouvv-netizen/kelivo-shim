@@ -1,6 +1,6 @@
 export function channelContextFor(source) {
   if (source === "telegram") {
-    return "【系统·当前入口】Telegram。本轮回复只会送回 Telegram；可按需使用 [语音]…[/语音] 与已登记的 [贴纸:名字]。";
+    return "【系统·当前入口】Telegram。本轮回复只会送回 Telegram；可按需使用 [语音]…[/语音] 与已登记的 [贴纸:名字]。语音支持中英文；需要自然气口时可在语音段内少量使用 <#0.3#>、(breath)、(chuckle)，不要每句都加。";
   }
   if (source === "kelivo") {
     return "【系统·当前入口】Kelivo。本轮回复只会送回 Kelivo；不要使用 Telegram 专属的语音或贴纸标记。";

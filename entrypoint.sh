@@ -45,15 +45,6 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   echo "[entrypoint] direct Claude subscription auth selected"
 fi
 
-# Voice fallback transcoder: only needed if ElevenLabs can't serve Ogg/Opus
-# directly (plan-gated formats) — then mp3 gets transcoded via ffmpeg.
-# Install is best-effort; without it opus-direct still works.
-if [ -n "$ELEVENLABS_API_KEY" ] && ! command -v ffmpeg >/dev/null 2>&1; then
-  echo "[entrypoint] installing ffmpeg (voice mp3 fallback)..."
-  (apt-get update -qq && apt-get install -y -qq --no-install-recommends ffmpeg) \
-    || echo "[entrypoint] ffmpeg install failed; voice works only if opus-direct is available"
-fi
-
 # Gmail OAuth 正本在持久卷。过去先复制到 /src、再复制到 ~/.gmail-mcp；同一容器
 # 重启时 /src 的旧副本仍在，便会盖回刚换好的邮箱令牌。现在直接把 Gmail MCP 的
 # 官方路径环境变量指向 /persona，彻底取消多层副本竞态。只有完整的一对文件才启用，

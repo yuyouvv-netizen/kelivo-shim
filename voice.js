@@ -1,23 +1,22 @@
-// voice.js — [语音] 标记解析 + ElevenLabs TTS(Telegram 语音条用)
+// voice.js — [语音] 标记解析 + MiniMax TTS(Telegram 语音条用)
 //
-// 回复文本里 [语音]English content[/语音] 包住的段落转成 Ogg/Opus 语音,
-// 其余照常发文字,顺序保持混排。任何环节失败由调用方降级为文字,内容不丢。
+// 回复文本里 [语音]…[/语音] 包住的段落转成 MP3 语音，其余照常发文字，
+// 顺序保持混排。MiniMax 的停顿与声音标签原样送入 TTS；失败时调用方降级为
+// 干净文字，不把 <#0.4#>、(breath) 之类控制符展示给用户。
 
-import { spawn } from "child_process";
 import { markdownCodeContains, markdownCodeRanges } from "./markdown-code.js";
 
-// 宽松匹配:方括号接受半角 [] 与全角 【】 混用,斜杠接受半角/全角。
-// 未闭合的开标记匹配不上 → 原样当普通文本,不吞字。
+// 宽松匹配：方括号接受半角 [] 与全角 【】 混用，斜杠接受半角/全角。
+// 未闭合的开标记匹配不上 → 原样当普通文本，不吞字。
 const VOICE_RE = /[\[【]\s*语音\s*[\]】]([\s\S]*?)[\[【]\s*[/／]\s*语音\s*[\]】]/g;
 
-// 语音段只走英文:这个音色是按英文调的,一套配方没法同时顾好中英文的流畅度,
-// 中文念出来会走音发飘,听着难受。所以语音段里只要出现 CJK 字符(汉字/假名/谚文),
-// 就不送 TTS,原样退回文字气泡——内容一个字都不丢,只是这段不出声。
-// 人设里也有对应约定(语音段用英文写),这里是保底,防止偶尔写漏。
-const CJK_RE = /[㐀-䶿一-鿿぀-ヿ가-힯]/;
+// MiniMax speech-2.8 的显式停顿和常用声音标签。只在 TTS 失败、降级为文字时
+// 清掉；真正合成时必须原样保留，模型才会做出换气、轻笑和自然断句。
+const PAUSE_RE = /<#\s*\d+(?:\.\d+)?\s*#>/gi;
+const SOUND_TAG_RE = /\((?:laughs|chuckle|coughs|clear-throat|groans|breath|pant|inhale|exhale|gasps|sniffs|sighs|snorts|burps|lip-smacking|humming|hissing|emm|sneezes)\)/gi;
 
 // 把一轮回复切成 [{ type: "text"|"voice", content }] 有序段落。
-// 空白的语音段丢弃;文字段原样保留(交给发送方自己 trim/分行)。
+// 空白的语音段丢弃；中英文都可以直接合成。
 export function splitVoiceSegments(text) {
   const segs = [];
   let last = 0;
@@ -27,51 +26,91 @@ export function splitVoiceSegments(text) {
     if (markdownCodeContains(codeRanges, m.index)) continue;
     if (m.index > last) segs.push({ type: "text", content: text.slice(last, m.index) });
     const inner = m[1].trim();
-    if (inner) segs.push({ type: CJK_RE.test(inner) ? "text" : "voice", content: inner });
+    if (inner) segs.push({ type: "voice", content: inner });
     last = m.index + m[0].length;
   }
   if (last < text.length) segs.push({ type: "text", content: text.slice(last) });
   return segs;
 }
 
-// ElevenLabs TTS → Ogg/Opus Buffer(Telegram sendVoice 要求的格式)。
-// 优先请求 opus 直出;拿不到(部分 output_format 有套餐门槛)退 mp3 + ffmpeg 转码。
-// voiceSettings 整个对象透传(speed/stability/similarity_boost/style/use_speaker_boost),
-// 配方由人耳盲测定,见机教版环境变量表。
-export async function ttsOgg({ text, apiKey, voiceId, modelId, voiceSettings, log = () => {} }) {
-  const call = async (fmt) => {
-    const r = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=${fmt}`,
-      {
-        method: "POST",
-        headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ text, model_id: modelId, voice_settings: voiceSettings }),
-        signal: AbortSignal.timeout(60000),
-      }
-    );
-    if (!r.ok) throw new Error(`elevenlabs ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    return Buffer.from(await r.arrayBuffer());
-  };
-  try {
-    return await call("opus_48000_64");
-  } catch (e) {
-    log("[voice] opus direct failed, falling back to mp3+ffmpeg:", e.message);
-    return mp3ToOgg(await call("mp3_44100_128"));
-  }
+export function voiceFallbackText(text) {
+  return String(text || "")
+    .replace(PAUSE_RE, " ")
+    .replace(SOUND_TAG_RE, " ")
+    .replace(/[ \t]+([，。！？；：,.!?;:])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ *\n */g, "\n")
+    .trim();
 }
 
-function mp3ToOgg(mp3) {
-  return new Promise((resolve, reject) => {
-    const ff = spawn("ffmpeg", ["-i", "pipe:0", "-c:a", "libopus", "-b:a", "48k", "-f", "ogg", "pipe:1"],
-      { stdio: ["pipe", "pipe", "pipe"] });
-    const out = [], err = [];
-    ff.stdout.on("data", (d) => out.push(d));
-    ff.stderr.on("data", (d) => err.push(d));
-    ff.on("error", reject); // ffmpeg 未安装等
-    ff.on("close", (code) => code === 0 && out.length
-      ? resolve(Buffer.concat(out))
-      : reject(new Error(`ffmpeg exit ${code}: ${Buffer.concat(err).toString().slice(-200)}`)));
-    ff.stdin.on("error", () => {}); // EPIPE 由 close 兜底
-    ff.stdin.end(mp3);
+const responseError = (status, body) => {
+  const detail = typeof body === "string" ? body : JSON.stringify(body);
+  return new Error(`minimax ${status}: ${detail.slice(0, 240)}`);
+};
+
+// MiniMax TTS → MP3 Buffer。Telegram Bot API 的 sendVoice 可直接接收 MP3，
+// 因此不依赖 ffmpeg，也不会因容器里缺少转码器而失败。
+export async function minimaxTtsMp3({
+  text,
+  apiKey,
+  voiceId,
+  modelId = "speech-2.8-hd",
+  voiceSettings = {},
+  apiHost = "https://api.minimax.io",
+  fetchImpl = fetch,
+}) {
+  if (!apiKey) throw new Error("MINIMAX_API_KEY is missing");
+  if (!voiceId) throw new Error("MINIMAX_VOICE_ID is missing");
+
+  const voiceSetting = {
+    voice_id: voiceId,
+    speed: voiceSettings.speed ?? 1,
+    vol: voiceSettings.vol ?? 1,
+    pitch: voiceSettings.pitch ?? 0,
+  };
+  const r = await fetchImpl(`${apiHost.replace(/\/$/, "")}/v1/t2a_v2`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: modelId,
+      text,
+      stream: false,
+      language_boost: "auto",
+      output_format: "hex",
+      voice_setting: voiceSetting,
+      audio_setting: {
+        sample_rate: 32000,
+        bitrate: 128000,
+        format: "mp3",
+        channel: 1,
+      },
+    }),
+    signal: AbortSignal.timeout(60000),
   });
+
+  const raw = await r.text();
+  let body;
+  try { body = JSON.parse(raw); }
+  catch { throw responseError(r.status, raw); }
+  if (!r.ok) throw responseError(r.status, body);
+  if (body?.base_resp?.status_code && body.base_resp.status_code !== 0) {
+    throw responseError(r.status, body.base_resp);
+  }
+
+  const hex = body?.data?.audio;
+  if (typeof hex !== "string" || !hex.length || hex.length % 2 || !/^[0-9a-f]+$/i.test(hex)) {
+    throw new Error("minimax returned no valid audio");
+  }
+  return Buffer.from(hex, "hex");
+}
+
+export async function ttsVoiceAudio(options) {
+  return {
+    data: await minimaxTtsMp3(options),
+    mimeType: "audio/mpeg",
+    filename: "voice.mp3",
+  };
 }

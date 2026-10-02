@@ -516,14 +516,13 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `TURN_STATE_DIR` | `/persona/turn-state` | 当前轮精确事件记录与断线回信箱 |
 | `MAILBOX_TTL_MS` | `1800000` | 原回复短期保留30分钟,同一句重发可直接取回 |
 | `SESSION_BACKUPS` | `1` | Claude 原生 transcript 最近一份校验备份;`0` 关闭 |
-| `ELEVENLABS_API_KEY` | (可选)ElevenLabs key | 启用 Telegram 语音:回复里 `[语音]English[/语音]` 段转原生语音条(sendVoice),失败自动降级发文字。需同时配 `ELEVENLABS_VOICE_ID`(Voice Design 产物;免费档不能走 API 用声音库社区声音) |
-| `ELEVENLABS_VOICE_ID` | (可选)voice id | 语音用的声音;换声音只改这个 |
-| `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2`(默认) | TTS 模型 |
-| `VOICE_SPEED` | `0.85`(默认) | 语速,合法 0.7~1.2;人耳盲测拍板后写入,改数字重启即生效 |
-| `VOICE_STABILITY` | `0.45`(默认) | 稳定性 0~1:低→语调起伏大、松弛;高→平稳但播音腔 |
-| `VOICE_SIMILARITY` | `0.95`(默认) | 相似度 0~1:高→贴 Voice Design 原始样本质感(API 渲染与网页试听有差距,靠它拉回) |
-| `VOICE_STYLE` | `0.35`(默认) | 风格夸张度 0~1:找磁性/戏剧感用,过高失控 |
-| `VOICE_SPEAKER_BOOST` | `1`(默认开) | speaker boost;`0` 关闭 |
+| `MINIMAX_API_KEY` | (可选)MiniMax API key | 启用 Telegram 语音:回复里 `[语音]…[/语音]` 中英文段转原生语音条(sendVoice),失败会清理控制标签后降级发文字。需同时配 `MINIMAX_VOICE_ID` |
+| `MINIMAX_VOICE_ID` | (可选)voice id | Voice Design 保存后的声音 ID;以后换声音只改这个，也可通过 `/voice` 热换而不重启 |
+| `MINIMAX_MODEL_ID` | `speech-2.8-hd`(默认) | TTS 模型 |
+| `MINIMAX_API_HOST` | `https://api.minimax.io`(默认) | MiniMax 国际站 API 地址；通常不用改 |
+| `VOICE_SPEED` | `1`(默认) | 语速,合法 0.5~2 |
+| `VOICE_VOLUME` | `1`(默认) | 音量,合法 0.1~10 |
+| `VOICE_PITCH` | `0`(默认) | 音高,合法 -12~12；觉得显老时先小幅升到 `1`，不要一次抬太多 |
 
 ---
 

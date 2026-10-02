@@ -61,7 +61,7 @@
 | `reasoning.js` | Kelivo 推理档位解析、旧版预算兼容与 Claude Code effort 归一化 |
 | `compact-settings.js` | PreCompact 摘要与 SessionStart 压缩后记忆恢复流程 |
 | `compact-instructions.js` | 不含工具清单的自然摘要兜底 |
-| `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |
+| `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + MiniMax 双语 TTS(音色可热换、失败自动降级发文字) |
 | `telegram-state.js` | Telegram 单用户安全配对、机器人身份绑定与 update 防重复回执；状态私存 `/persona` |
 | `telegram-tools.js` | Telegram 端的短工具名与实时工具状态文案，不暴露 MCP 管线细节 |
 | `channel-context.js` | 为每轮标注当前 Kelivo / Telegram 出口，避免 TG 专属格式串到备用前端 |

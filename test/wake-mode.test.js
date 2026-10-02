@@ -65,6 +65,8 @@ test("autonomous wake omits the previous-spoke clause until one is known", () =>
 
 test("Telegram-primary wakes describe the visible Telegram destination", () => {
   assert.match(autonomousWakeInstruction("Telegram"), /通过 Telegram 聊天 送到又又手里/);
+  assert.match(autonomousWakeInstruction("Telegram"), /\[碎碎念\]/);
+  assert.doesNotMatch(autonomousWakeInstruction("Bark"), /\[碎碎念\]/);
   const prompt = autonomousWakePrompt({
     now: "2026-09-30 13:00",
     idleUserMin: 52,

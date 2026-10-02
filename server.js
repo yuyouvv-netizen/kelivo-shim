@@ -38,6 +38,14 @@ import {
 } from "./telegram-state.js";
 import { telegramToolStatusText } from "./telegram-tools.js";
 import {
+  DEFAULT_TELEGRAM_CARD_TTL_MS,
+  normalizeTelegramCardBaseUrl,
+  registerTelegramCardRoutes,
+  splitTelegramCardSegments,
+  TelegramCardStore,
+  telegramCardPreview,
+} from "./telegram-cards.js";
+import {
   isTelegramHtmlParseError,
   telegramParagraphBubbles,
   telegramTextToHtml,
@@ -1549,6 +1557,17 @@ registerStatusRoute(app, {
   json: express.json,
   log,
 });
+// Register this small public endpoint before the general 100 MB parser so an
+// unauthenticated request cannot make Express buffer a huge body before the
+// Telegram signature is checked. The getters are evaluated only on requests,
+// after the Telegram state below has been initialized.
+registerTelegramCardRoutes(app, {
+  getStore: () => tgCards,
+  getBotToken: () => TG_TOKEN,
+  getPairedChatId: () => tgChatId,
+  json: express.json,
+  log,
+});
 app.use(express.json({ limit: "100mb" }));
 registerClaudeOauthAdmin(app, {
   shimKey: SHIM_KEY, claudeBin: CLAUDE_BIN, urlencoded: express.urlencoded, log,
@@ -1722,6 +1741,11 @@ app.get("/debug", (_q, r) => r.json({
     proactiveEnabled: TG_PROACTIVE,
     proactiveReady: telegramProactiveReady(),
     toolStatus: TG_TOOL_STATUS,
+    cards: {
+      enabled: !!TG_CARD_BASE_URL,
+      ttlDays: TG_CARD_TTL_DAYS,
+      publicUrlSource: process.env.TG_CARD_BASE_URL ? "explicit" : process.env.ZEABUR_WEB_URL ? "zeabur" : "missing",
+    },
     pairCodeConfigured: !!TG_PAIR_CODE,
     ...tgState.status(),
   },
@@ -1868,6 +1892,14 @@ const TG_PAIR_CODE = normalizeTelegramPairCode(process.env.TG_PAIR_CODE);
 const TG_PROACTIVE = process.env.TG_PROACTIVE === "1";
 const TG_TOOL_STATUS = process.env.TG_TOOL_STATUS !== "0";
 const TG_STATE_FILE = process.env.TG_STATE_FILE || "/persona/telegram-state.json";
+const TG_CARD_DIR = process.env.TG_CARD_DIR || "/persona/telegram-cards";
+const tgCardTtlDaysFromEnv = +(process.env.TG_CARD_TTL_DAYS || 7);
+const TG_CARD_TTL_DAYS = Number.isFinite(tgCardTtlDaysFromEnv)
+  ? Math.max(1, Math.min(30, tgCardTtlDaysFromEnv))
+  : 7;
+const TG_CARD_BASE_URL = normalizeTelegramCardBaseUrl(
+  process.env.TG_CARD_BASE_URL || process.env.ZEABUR_WEB_URL,
+);
 const tgState = new TelegramStateStore({
   file: TG_STATE_FILE,
   configuredChatId: TG_CONFIGURED_CHAT_ID,
@@ -1876,6 +1908,15 @@ const tgState = new TelegramStateStore({
 let tgChatId = tgState.chatId();
 let tgOffset = tgState.nextOffset();
 let tgBotId = null;
+const tgCards = new TelegramCardStore({
+  dir: TG_CARD_DIR,
+  ttlMs: TG_CARD_TTL_DAYS * 24 * 60 * 60 * 1000 || DEFAULT_TELEGRAM_CARD_TTL_MS,
+  log,
+});
+const initialCardCleanup = tgCards.cleanup();
+if (initialCardCleanup.removed) log("[tg-card] expired cards removed", initialCardCleanup.removed);
+const tgCardCleanupTimer = setInterval(() => tgCards.cleanup(), 6 * 60 * 60 * 1000);
+tgCardCleanupTimer.unref?.();
 
 async function tgApi(method, payload) {
   const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/${method}`, {
@@ -1986,6 +2027,36 @@ async function tgSendText(chatId, text) {
 
 async function tgSend(text) {
   return tgSendText(tgChatId, text);
+}
+
+async function tgSendCard({ title, content }) {
+  if (!tgChatId || !content || !TG_CARD_BASE_URL) return false;
+  const card = tgCards.create({
+    title: title || `${aiName.get()}的碎碎念`,
+    body: content,
+    chatId: tgChatId,
+  });
+  if (!card) return false;
+  const cardUrl = `${TG_CARD_BASE_URL}/telegram/card/${card.id}`;
+  let response;
+  try {
+    response = await tgApi("sendMessage", {
+      chat_id: tgChatId,
+      parse_mode: "HTML",
+      text: `♡ <b>${tgEsc(card.title)}</b>\n${tgEsc(telegramCardPreview(card.body))}`,
+      reply_markup: {
+        inline_keyboard: [[{ text: "展开全部", web_app: { url: cardUrl } }]],
+      },
+    });
+  } catch (error) {
+    throw markTgDeliveryUnknown(error);
+  }
+  if (!response.ok) {
+    tgCards.remove(card.id);
+    log("[tg-card] Telegram rejected card", JSON.stringify(response).slice(0, 160));
+    return false;
+  }
+  return true;
 }
 
 function createTgToolStatus() {
@@ -2176,14 +2247,31 @@ async function tgSendSticker(name) {
 async function tgSendReply(text) {
   if (!tgChatId || !text) return 0;
   const segs = [];
-  for (const s of splitVoiceSegments(text)) {
-    if (s.type === "text") segs.push(...splitStickerSegments(s.content, hasSticker));
-    else segs.push(s);
+  for (const cardSegment of splitTelegramCardSegments(text)) {
+    if (cardSegment.type === "card") {
+      segs.push(cardSegment);
+      continue;
+    }
+    for (const s of splitVoiceSegments(cardSegment.content)) {
+      if (s.type === "text") segs.push(...splitStickerSegments(s.content, hasSticker));
+      else segs.push(s);
+    }
   }
   let delivered = 0;
   try {
     for (const seg of segs) {
       if (!seg.content.trim()) continue;
+      if (seg.type === "card") {
+        try {
+          if (await tgSendCard(seg)) { delivered += 1; continue; }
+        } catch (e) {
+          if (e?.tgDeliveryUnknown) throw e;
+          log("[tg-card-err]", e.message);
+        }
+        // 域名未就绪、卷不可写或 Telegram 明确拒绝时，正文照常发出，绝不吞话。
+        delivered += await tgSendBubbles(seg.content);
+        continue;
+      }
       if (seg.type === "sticker") {
         try {
           if (await tgSendSticker(seg.content)) delivered += 1;

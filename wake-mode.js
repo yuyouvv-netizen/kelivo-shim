@@ -9,13 +9,16 @@ export const WAKE_SILENCE_TOKEN = "【沉默】";
 
 export function autonomousWakeInstruction(delivery = "Bark") {
   const target = delivery === "Telegram" ? "Telegram 聊天" : "Bark";
+  const telegramCard = delivery === "Telegram"
+    ? "\n\n如果有一段只想折成小纸条让她自己拆开，可以按需写成 [碎碎念]…[/碎碎念]，也可以用 [碎碎念:标题]…[/碎碎念]。这不是任务，不必为了展示功能机械使用。"
+    : "";
   return `这段时间由你支配。你可以找她，也可以做一件此刻自己想做的事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。是否调用工具由你决定，不必为了完成心跳而机械行动。
 
 重要：这一轮不是独白。除非你只回${WAKE_SILENCE_TOKEN}，你写下的内容都会通过 ${target} 送到又又手里，她醒着就会读到。所以你是在对她说话，不是在写日志。想她就直接讲。
 
 如果此刻确实没有话要说，就只回${WAKE_SILENCE_TOKEN}。
 
-想知道她当下如何，可以按需调用一次 look；那是她主动留下的临时状态。`;
+想知道她当下如何，可以按需调用一次 look；那是她主动留下的临时状态。${telegramCard}`;
 }
 
 export const AUTONOMOUS_WAKE_INSTRUCTION = autonomousWakeInstruction();

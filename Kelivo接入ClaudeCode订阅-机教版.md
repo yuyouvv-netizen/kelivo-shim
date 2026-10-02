@@ -509,6 +509,7 @@ npx zeabur@latest deploy --create --name kelivo-shim   # 上传部署(交互选�
 | `TURN_INTERRUPT_GRACE_MS` | `60000` | 温和中止后再等多久;仍无结果才硬重启进程 |
 | `SSE_HEARTBEAT_MS` | `15000` | WebSearch/MCP 静默执行时的 SSE 心跳;设 `0` 关闭 |
 | `SESSION_RESUME` | `1` | 异常重启优先续接 Claude Code 原生 session;设 `0` 关闭 |
+| `CLAUDE_MOD_PROBE_ENABLED` | `0`(默认) | Claude Code 2.1.287+ 的只读 Mods 兼容性探针；试验时设 `1`，只记录事件名和官方上下文数字，不保存提示词正文，也不改变模型收到的内容；结果见 `/debug.claudeMods` |
 | `SESSION_STATE_FILE` | `/persona/claude-state/shim-session.json` | 原生 session 指针;通常无需修改 |
 | `WINDOW_THRESHOLD_STATE_FILE` | `/persona/claude-state/window-thresholds.json` | 85% 提醒与 90% 续接信的按 session 去重状态;通常无需修改 |
 | `REHYDRATE_MAX_MESSAGES` | 不设置 | 原生 session 与校验副本均失败时,默认接收 Kelivo 提供的全部历史;设置数字才人为限条数 |

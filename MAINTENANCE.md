@@ -13,7 +13,7 @@
    `/src` 是容器临时盘——换容器就清空,**手工放进 /src 的东西必须同步放进 /persona**。
 3. 部署会重启常驻 claude 进程。现在会从 Kelivo 请求里的最近历史自动恢复,但前端
    可能只发送有限条消息,所以**动部署前仍先安排归档**;恢复层是事故兜底,不是归档替代品。
-4. **Claude Code 固定为 `2.1.239`**：`package.json` 必须写精确版本，Docker 用
+4. **Claude Code 固定为 `2.1.288`**：`package.json` 必须写精确版本，Docker 用
    `package-lock.json` + `npm ci`。不要改回 `^`、`~` 或 `latest`；升级前先单独验证
    summarized thinking、signature、stream-json 空回和原生 resume。
 
@@ -67,6 +67,10 @@
   只存签名长度、不存签名正文。页面沿用 `SHIM_KEY`、限速登录、no-store/CSP 安全头，
   不发送消息、不调用模型、不改变任何运行状态。
 - **人设保险箱**(`entrypoint.sh`):开机从 `/persona` 恢复缺失的人设与 `.mcp.json`。
+- **Mods 试验阀**(`claude-mods.js`/`mods/kelivo-probe`):默认不加载。只有显式设置
+  `CLAUDE_MOD_PROBE_ENABLED=1` 才把只读探针目录传给常驻进程；探针只写事件名、来源类型
+  和 `$.session.usage()` 的数字到 `/tmp`，不记录任何提示词或对话正文，也不改事件结果。
+  `/debug.claudeMods.probe` 没有新回执时按“本进程未加载”处理，不得绕过官方灰度开关。
 - **语音**(`voice.js`):`[语音]…[/语音]` 段落 → ElevenLabs opus 直出(失败降级
   mp3+ffmpeg,再失败降级文字)。突然不出声九成是 ElevenLabs 月度额度用完。
 - **表情包**(`stickers.js`):回复里的 `[贴纸:名字]` 查注册表 → `sendSticker`

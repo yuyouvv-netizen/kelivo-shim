@@ -1,0 +1,8 @@
+{
+  "name": "kelivo-probe",
+  "version": "0.1.0",
+  "description": "Read-only Claude Code Mods compatibility probe for kelivo-shim",
+  "author": {
+    "name": "kelivo-shim"
+  }
+}

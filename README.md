@@ -6,7 +6,8 @@
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
 - Kelivo 的思维链强度会透传为 Claude Code `--effort`;切档只重启运行管道并续接原生 session
 - 可用 `CLAUDE_SYSTEM_PROMPT_MODE=replace` 移除 Claude Code 原生软件工程提示词，同时保留 CLAUDE.md、MCP 工具和压缩恢复钩子
-- Claude Code 精确锁定在 `2.1.284`（支持 Sonnet 5.5），并由 `package-lock.json` + `npm ci` 阻止未来部署时静默升级
+- Claude Code 精确锁定在 `2.1.288`（含官方 Mods 支持），并由 `package-lock.json` + `npm ci` 阻止未来部署时静默升级
+- 可选的只读 Mods 探针只记录事件名和官方上下文用量，不保存提示词正文；默认关闭，设 `CLAUDE_MOD_PROBE_ENABLED=1` 后可在 `/debug.claudeMods` 验证灰度开关与兼容性
 - 普通 Opus 4.6 按 200K，原生 1M 型号按 1M 计算窗口；长对话在对应压缩线的 90% 自动写一封 OB Letter 续接信，压缩后自动取回全部钉选桶、按 OB 排名浮现的 10 个普通桶与最近五天的续接信
 - 异常重启优先续接 Claude Code 原生 session,校验副本与 Kelivo 全部可用历史只作自动兜底
 - Kelivo 自动标题在 shim 本地生成,不会串进常驻 Claude 的私人对话上下文
@@ -61,6 +62,7 @@
 | `reasoning.js` | Kelivo 推理档位解析、旧版预算兼容与 Claude Code effort 归一化 |
 | `compact-settings.js` | PreCompact 摘要与 SessionStart 压缩后记忆恢复流程 |
 | `compact-instructions.js` | 不含工具清单的自然摘要兜底 |
+| `claude-mods.js` / `mods/kelivo-probe` | Claude Code Mods 的开关、只读加载回执与不含正文的兼容性探针 |
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |
 | `telegram-state.js` | Telegram 单用户安全配对、机器人身份绑定与 update 防重复回执；状态私存 `/persona` |
 | `telegram-tools.js` | Telegram 端的短工具名与实时工具状态文案，不暴露 MCP 管线细节 |

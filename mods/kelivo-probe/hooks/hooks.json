@@ -1,0 +1,4 @@
+{
+  "description": "Observe Claude Code prompt event names and context usage without storing prompt text",
+  "modules": ["./register.js"]
+}

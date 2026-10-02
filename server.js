@@ -104,6 +104,13 @@ import {
 import { CLAUDE_EFFORT_LEVELS, normalizeClaudeEffort, reasoningForRequest } from "./reasoning.js";
 import { configuredDisallowedTools } from "./tool-policy.js";
 import {
+  claudeModsSupported,
+  clearClaudeModProbe,
+  DEFAULT_CLAUDE_MOD_PROBE_FILE,
+  readClaudeModProbe,
+  withClaudeModProbe,
+} from "./claude-mods.js";
+import {
   isStopSequenceNotice,
   STOP_SEQUENCE_NOTICE,
   StopSequenceStateStore,
@@ -169,6 +176,9 @@ const STOP_SEQUENCES = stopSequencesFromEnv(process.env.CLAUDE_STOP_SEQUENCE);
 const STOP_SEQUENCE_STATE_FILE = process.env.STOP_SEQUENCE_STATE_FILE ||
   "/persona/claude-state/stop-sequence.json";
 const STATUS_MCP_APPROVAL_CONFIGURED = process.env.STATUS_MCP_APPROVAL_CONFIGURED === "1";
+const CLAUDE_MOD_PROBE_ENABLED = process.env.CLAUDE_MOD_PROBE_ENABLED === "1";
+const CLAUDE_MOD_PROBE_DIR = process.env.CLAUDE_MOD_PROBE_DIR ||
+  path.join(process.cwd(), "mods", "kelivo-probe");
 // 默认保留 Claude Code 原生提示,再追加私人提示。若原生工程代理气质过重,
 // Zeabur 临时设 CLAUDE_SYSTEM_PROMPT_MODE=replace 并重新启动即可回退。
 const SYSTEM_PROMPT_MODE = normalizeSystemPromptMode(process.env.CLAUDE_SYSTEM_PROMPT_MODE);
@@ -667,7 +677,13 @@ function spawnClaude(kelivoSystem, model, effort) {
   if (COMPACT_HOOK) args.push("--settings", compactSettingsArg({
     memoryEnabled: ALLOWED.includes("mcp__ombre"),
   }));
-  const env = { ...process.env };
+  const env = withClaudeModProbe(process.env, {
+    enabled: CLAUDE_MOD_PROBE_ENABLED,
+    pluginDir: CLAUDE_MOD_PROBE_DIR,
+  });
+  if (CLAUDE_MOD_PROBE_ENABLED && !clearClaudeModProbe()) {
+    log("[claude-mods] could not clear the previous probe receipt");
+  }
   delete env.ANTHROPIC_API_KEY;
   // ANTHROPIC_AUTH_TOKEN outranks CLAUDE_CODE_OAUTH_TOKEN in Claude Code.
   // When the new account's long-lived OAuth token exists, never let a stale
@@ -1665,6 +1681,12 @@ app.get("/debug", (_q, r) => r.json({
   browser: {
     configured: !!(process.env.BROWSER_MCP_URL && process.env.BROWSER_MCP_TOKEN),
     toolNamespace: "browser",
+  },
+  claudeMods: {
+    supported: claudeModsSupported(CLAUDE_CODE_VERSION),
+    probeEnabled: CLAUDE_MOD_PROBE_ENABLED,
+    probeDirPresent: fs.existsSync(CLAUDE_MOD_PROBE_DIR),
+    probe: readClaudeModProbe(DEFAULT_CLAUDE_MOD_PROBE_FILE),
   },
   status: {
     writeConfigured: !!STATUS_WRITE_TOKEN,

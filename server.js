@@ -1581,6 +1581,7 @@ registerTelegramCardRoutes(app, {
   getStore: () => tgCards,
   getBotToken: () => TG_TOKEN,
   getPairedChatId: () => tgChatId,
+  onReply: ({ text }) => submitTelegramTurn(text, [], { includeReceipts: false }),
   json: express.json,
   log,
 });
@@ -2067,7 +2068,7 @@ async function tgSendCard({ title, content }) {
       parse_mode: "HTML",
       text: `♡ <b>${tgEsc(card.title)}</b>\n${tgEsc(telegramCardPreview(card.body))}`,
       reply_markup: {
-        inline_keyboard: [[{ text: "展开全部", web_app: { url: cardUrl } }]],
+        inline_keyboard: [[{ text: "拆开", web_app: { url: cardUrl } }]],
       },
     });
   } catch (error) {
@@ -2459,6 +2460,72 @@ async function stickerIntake(m, text) {
   return true;
 }
 
+function createTelegramTurnSink() {
+  // Mini App 回信与普通 TG 消息共用这条出口：都会在聊天里显示
+  // 「正在输入」，并把模型回复作为正常 Telegram 气泡送回。
+  const typing = setInterval(() => tgApi("sendChatAction", {
+    chat_id: tgChatId, action: "typing",
+  }).catch(() => {}), 4500);
+  typing.unref?.();
+  tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {});
+  let think = "";
+  const toolStatus = createTgToolStatus();
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(typing);
+  };
+  return {
+    stop,
+    sink: {
+      text() {},
+      thinking(value) { if (TG_THINKING) think += value; },
+      toolStart(name) { toolStatus.start(name); },
+      toolResult(name, status) { toolStatus.result(name, status); },
+      finish(_usage, fullText) {
+        stop();
+        const result = (fullText || "").replace(/‖/g, "\n").trim();
+        (async () => {
+          await toolStatus.finish();
+          if (think.trim()) {
+            try { await tgSendThinking(think.trim()); }
+            catch (error) { log("[tg-think-err]", error.message); }
+          }
+          await tgSendReply(result || "…");
+        })().catch((error) => log("[tg-err]", error.message));
+      },
+    },
+  };
+}
+
+function submitTelegramTurn(text, images = [], { includeReceipts = true } = {}) {
+  const claim = includeReceipts ? tgCards.claimPendingReceipts(tgChatId) : null;
+  const current = String(text || "");
+  const input = claim?.text
+    ? `${claim.text}\n\n【又又现在发来的消息】\n${current || "（又又随这条消息发来了一张图片。）"}`
+    : current;
+  const { sink, stop } = createTelegramTurnSink();
+  let accepted = false;
+  try {
+    accepted = submitTurn(input, images, sink, { src: "telegram" });
+  } catch (error) {
+    stop();
+    if (claim?.events.length) tgCards.releaseReceiptClaim(claim);
+    throw error;
+  }
+  if (claim?.events.length) {
+    if (accepted) {
+      if (!tgCards.finalizeReceiptClaim(claim)) {
+        log("[tg-card] receipt claim stayed locked after queueing", claim.id);
+      }
+    } else {
+      tgCards.releaseReceiptClaim(claim);
+    }
+  }
+  return accepted;
+}
+
 // GET /stickers?key=<SHIM_KEY> —— 看图库里有哪些名字(排查用;注册表本身在卷上)
 app.get("/stickers", (req, res) => {
   if (!voiceAuth(req, res)) return;
@@ -2522,29 +2589,7 @@ async function handleTgMessage(m) {
     text = text ? `${text}\n${note}` : note;
   }
   if (!text && !images.length) return;
-  // 生成回复期间维持「正在输入…」
-  const typing = setInterval(() => tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {}), 4500);
-  tgApi("sendChatAction", { chat_id: tgChatId, action: "typing" }).catch(() => {});
-  let think = "";
-  const toolStatus = createTgToolStatus();
-  const sink = {
-    text() {}, thinking(t) { if (TG_THINKING) think += t; },
-    toolStart(name) { toolStatus.start(name); },
-    toolResult(name, status) { toolStatus.result(name, status); },
-    finish(_u, fullText) {
-      clearInterval(typing);
-      const t = (fullText || "").replace(/‖/g, "\n").trim();
-      (async () => {
-        await toolStatus.finish();
-        if (think.trim()) {
-          try { await tgSendThinking(think.trim()); }
-          catch (e) { log("[tg-think-err]", e.message); }
-        }
-        await tgSendReply(t || "…");
-      })().catch((e) => log("[tg-err]", e.message));
-    },
-  };
-  submitTurn(text, images, sink, { src: "telegram" });
+  submitTelegramTurn(text, images);
 }
 async function tgPoll() {
   const me = await tgApi("getMe", {});

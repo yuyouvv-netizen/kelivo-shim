@@ -6,6 +6,7 @@ import os from "os";
 import path from "path";
 
 import {
+  formatTelegramCardReceipt,
   normalizeTelegramCardBaseUrl,
   splitTelegramCardSegments,
   TelegramCardStore,
@@ -67,6 +68,50 @@ test("temporary cards survive restart, stay paired and expire automatically", (t
   now += 60_001;
   assert.equal(restarted.get(card.id, 8012), null);
   assert.equal(fs.existsSync(path.join(root, `${card.id}.json`)), false);
+});
+
+test("paper-note actions are timestamped, claimed once and released only after known rejection", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-card-receipts-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let now = Date.parse("2026-10-03T09:00:00Z"); // 10/03 17:00 in Singapore
+  const store = new TelegramCardStore({ dir: root, now: () => now });
+  const card = store.create({ title: "第一张正式的", body: "慢慢拆。", chatId: 8012 });
+
+  now = Date.parse("2026-10-06T18:11:00Z"); // 10/07 02:11 in Singapore
+  assert.ok(store.markOpened(card.id, 8012));
+  const openedAt = store.get(card.id, 8012).openedAt;
+  now += 60_000;
+  assert.equal(store.markOpened(card.id, 8012).openedAt, openedAt);
+
+  const firstClaim = store.claimPendingReceipts(8012);
+  assert.equal(firstClaim.events.length, 1);
+  assert.match(firstClaim.text, /10\/07 02:11，又又拆开了 10\/03 的《第一张正式的》/);
+  assert.equal(store.claimPendingReceipts(8012).events.length, 0);
+
+  assert.equal(store.releaseReceiptClaim(firstClaim), true);
+  const secondClaim = store.claimPendingReceipts(8012);
+  assert.equal(secondClaim.events.length, 1);
+  assert.equal(store.finalizeReceiptClaim(secondClaim), true);
+  assert.equal(store.claimPendingReceipts(8012).events.length, 0);
+
+  now += 60_000;
+  assert.ok(store.markHearted(card.id, 8012));
+  now += 60_000;
+  assert.equal(store.recordReply(card.id, 8012, "我也想你。").created, true);
+  assert.equal(store.recordReply(card.id, 8012, "我也想你。").created, false);
+  assert.equal(store.recordReply(card.id, 8012, "第二封回信").reason, "already-replied");
+  const replyClaim = store.claimPendingReceipts(8012);
+  assert.deepEqual(replyClaim.events.map((event) => event.type), ["hearted", "replied"]);
+  assert.match(replyClaim.text, /又又为《第一张正式的》点亮了心/);
+  assert.match(replyClaim.text, /又又回复了《第一张正式的》：“我也想你。”/);
+});
+
+test("receipt formatter keeps events in chronological Singapore time", () => {
+  const text = formatTelegramCardReceipt([
+    { type: "replied", at: "2026-10-03T09:09:00Z", createdAt: "2026-10-03T09:00:00Z", title: "纸条", reply: "收到" },
+    { type: "opened", at: "2026-10-03T09:04:00Z", createdAt: "2026-10-03T09:00:00Z", title: "纸条" },
+  ]);
+  assert.equal(text, "【小纸条回执】\n10/03 17:04，又又拆开了《纸条》。\n10/03 17:09，又又回复了《纸条》：“收到”");
 });
 
 function signedInitData({ token, userId, authDate }) {

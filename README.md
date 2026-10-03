@@ -67,7 +67,7 @@
 | `voice.js` | Telegram 语音:`[语音]…[/语音]` 标记解析 + ElevenLabs TTS(失败自动降级发文字) |
 | `telegram-state.js` | Telegram 单用户安全配对、机器人身份绑定与 update 防重复回执；状态私存 `/persona` |
 | `telegram-tools.js` | Telegram 端的短工具名与实时工具状态文案，不暴露 MCP 管线细节 |
-| `telegram-cards.js` | Telegram 小纸条：两行预览、配对身份校验、TG 内展开页与 7 天自动清理 |
+| `telegram-cards.js` | Telegram 小纸条：配对身份校验、拆开/点心/回信回执、TG 内展开页与 7 天自动清理 |
 | `channel-context.js` | 为每轮标注当前 Kelivo / Telegram 出口，避免 TG 专属格式串到备用前端 |
 | `entrypoint.sh` | 容器启动脚本(补装 claude 原生二进制等) |
 | `package.json` / `package-lock.json` | 精确锁定的运行依赖；不要把 Claude Code 改回 `^` 或 `latest` |

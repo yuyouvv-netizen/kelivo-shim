@@ -28,11 +28,13 @@ test("card page keeps private text server-side until Telegram identity is verifi
   const chatId = 8012;
   const store = new TelegramCardStore({ dir: root });
   const card = store.create({ title: "虞克的小纸条", body: "只有配对的人能看到", chatId });
+  const delivered = [];
   const app = express();
   registerTelegramCardRoutes(app, {
     getStore: () => store,
     getBotToken: () => token,
     getPairedChatId: () => chatId,
+    onReply: ({ text }) => { delivered.push(text); return true; },
     json: express.json,
   });
   const server = app.listen(0, "127.0.0.1");
@@ -45,6 +47,8 @@ test("card page keeps private text server-side until Telegram identity is verifi
   const html = await shell.text();
   assert.match(html, /正在拆开这张纸条/);
   assert.match(html, /\/telegram\/card-art\/rabbits\.webp/);
+  assert.match(html, /为这张纸条点亮爱心/);
+  assert.match(html, /给虞克回一句/);
   assert.doesNotMatch(html, /只有配对的人能看到/);
   assert.equal(shell.headers.get("cache-control"), "no-store");
 
@@ -66,5 +70,37 @@ test("card page keeps private text server-side until Telegram identity is verifi
     body: JSON.stringify({ initData: signedInitData({ token, userId: chatId }) }),
   });
   assert.equal(allowed.status, 200);
-  assert.deepEqual((await allowed.json()).card.body, "只有配对的人能看到");
+  const opened = await allowed.json();
+  assert.equal(opened.card.body, "只有配对的人能看到");
+  assert.equal(opened.card.hearted, false);
+  assert.ok(store.get(card.id, chatId).openedAt);
+
+  const initData = signedInitData({ token, userId: chatId });
+  const hearted = await fetch(`${base}/telegram/card/${card.id}/heart`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(hearted.status, 200);
+  assert.equal((await hearted.json()).card.hearted, true);
+
+  const reply = await fetch(`${base}/telegram/card/${card.id}/reply`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, reply: "我也想你。" }),
+  });
+  assert.equal(reply.status, 200);
+  assert.equal((await reply.json()).delivered, true);
+  assert.equal(delivered.length, 1);
+  assert.match(delivered[0], /又又拆开了/);
+  assert.match(delivered[0], /又又为《虞克的小纸条》点亮了心/);
+  assert.match(delivered[0], /又又回复了《虞克的小纸条》：“我也想你。”/);
+
+  const repeated = await fetch(`${base}/telegram/card/${card.id}/reply`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, reply: "我也想你。" }),
+  });
+  assert.equal(repeated.status, 200);
+  assert.equal(delivered.length, 1);
 });

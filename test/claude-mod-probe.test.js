@@ -7,11 +7,11 @@ test("metadata probe observes events without changing or storing prompt text", a
   const hooks = new Map();
   register((event, handler) => hooks.set(event, handler));
 
-  let receipt = null;
+  const writes = new Map();
   const api = {
     fs: {
-      write: async (_file, value) => {
-        receipt = JSON.parse(value);
+      write: async (file, value) => {
+        writes.set(file, JSON.parse(value));
       },
     },
     session: {
@@ -59,10 +59,34 @@ test("metadata probe observes events without changing or storing prompt text", a
     async (event) => event,
   ), measure);
 
+  const toolDescription = {
+    description: "Read a post without modifying it.",
+  };
+  assert.equal(await hooks.get("tool.describe")(
+    api,
+    {
+      tool: "mcp__browser__x_read_post",
+      origin: { kind: "mcp" },
+      description: "A stale description that Claude will not receive.",
+    },
+    async () => toolDescription,
+  ), toolDescription);
+
+  const receipt = writes.get("/tmp/kelivo-claude-mod-probe.json");
   assert.equal(receipt.loaded, true);
   assert.deepEqual(receipt.sections, ["communication"]);
   assert.deepEqual(receipt.attachments.date, { count: 1, origins: ["engine"] });
   assert.deepEqual(receipt.compose, [{ id: "communication", scope: "main" }]);
   assert.deepEqual(receipt.usage, { tokens: 1234, window: 200000, percent: 0.617 });
   assert.doesNotMatch(JSON.stringify(receipt), /private|must-not-be-written/);
+
+  const audit = writes.get("/tmp/kelivo-claude-mod-tools.json");
+  assert.equal(audit.count, 1);
+  assert.deepEqual(audit.tools, [{
+    name: "mcp__browser__x_read_post",
+    description: "Read a post without modifying it.",
+    chars: 33,
+    origin: "mcp",
+  }]);
+  assert.doesNotMatch(JSON.stringify(audit), /stale/);
 });

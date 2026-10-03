@@ -6,6 +6,7 @@
 - 带思考链透传、MCP 工具(记忆/邮箱/自定义)、图片、多模型切换
 - Kelivo 的思维链强度会透传为 Claude Code `--effort`;切档只重启运行管道并续接原生 session
 - 可用 `CLAUDE_SYSTEM_PROMPT_MODE=replace` 移除 Claude Code 原生软件工程提示词，同时保留 CLAUDE.md、MCP 工具和压缩恢复钩子
+- 启用 `CLAUDE_MOD_PROBE_ENABLED=1` 时，探针会把提示类型等元数据写到 `/tmp/kelivo-claude-mod-probe.json`，并把 Claude 实际收到的工具说明单独写到 `/tmp/kelivo-claude-mod-tools.json`；两者都不会改变提示或工具说明
 - Claude Code 精确锁定在 `2.1.288`（含官方 Mods 支持），并由 `package-lock.json` + `npm ci` 阻止未来部署时静默升级
 - 可选的只读 Mods 探针只记录事件名和官方上下文用量，不保存提示词正文；默认关闭，设 `CLAUDE_MOD_PROBE_ENABLED=1` 后可在 `/debug.claudeMods` 验证灰度开关与兼容性
 - 普通 Opus 4.6 按 200K，原生 1M 型号按 1M 计算窗口；长对话在对应压缩线的 90% 自动写一封 OB Letter 续接信，压缩后自动取回全部钉选桶、按 OB 排名浮现的 10 个普通桶与最近五天的续接信

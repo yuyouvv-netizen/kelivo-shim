@@ -4,7 +4,10 @@ import { compactToolDescription } from '../tool-descriptions.js'
 
 const PROBE_FILE = '/tmp/kelivo-claude-mod-probe.json'
 const TOOL_AUDIT_FILE = '/tmp/kelivo-claude-mod-tools.json'
-const AUDIT_ENABLED = process.env.CLAUDE_MOD_AUDIT_ENABLED !== '0'
+
+function auditEnabled() {
+  return process.env.CLAUDE_MOD_AUDIT_ENABLED === '1'
+}
 
 const state = {
   schema: 1,
@@ -51,7 +54,7 @@ function rememberAttachment(type, origin) {
 }
 
 async function flush($) {
-  if (!AUDIT_ENABLED) return
+  if (!auditEnabled()) return
   state.updatedAt = now()
   await $.fs.write(PROBE_FILE, JSON.stringify(state, null, 2))
 }
@@ -87,7 +90,7 @@ function rememberTool(event, result, originalDescription) {
 }
 
 async function flushToolAudit($) {
-  if (!AUDIT_ENABLED) return
+  if (!auditEnabled()) return
   await $.fs.write(TOOL_AUDIT_FILE, JSON.stringify(toolAudit, null, 2))
 }
 

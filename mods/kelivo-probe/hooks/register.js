@@ -1,6 +1,7 @@
 // Metadata-only probe for Claude Code 2.1.287+ Mods.
 // It never records prompt text and never changes an event or its result.
 const PROBE_FILE = '/tmp/kelivo-claude-mod-probe.json'
+const TOOL_AUDIT_FILE = '/tmp/kelivo-claude-mod-tools.json'
 
 const state = {
   schema: 1,
@@ -11,6 +12,14 @@ const state = {
   attachments: {},
   compose: [],
   usage: null,
+}
+
+const toolAudit = {
+  schema: 1,
+  capturedAt: null,
+  updatedAt: null,
+  count: 0,
+  tools: [],
 }
 
 function now() {
@@ -41,6 +50,34 @@ function rememberAttachment(type, origin) {
 async function flush($) {
   state.updatedAt = now()
   await $.fs.write(PROBE_FILE, JSON.stringify(state, null, 2))
+}
+
+function toolName(event) {
+  return typeof event?.tool === 'string' && event.tool ? event.tool : 'unknown'
+}
+
+function rememberTool(event, result) {
+  const description = typeof result?.description === 'string'
+    ? result.description
+    : typeof event?.description === 'string' ? event.description : ''
+  const name = toolName(event)
+  const entry = {
+    name,
+    description,
+    chars: Array.from(description).length,
+    origin: typeof event?.origin?.kind === 'string' ? event.origin.kind : null,
+  }
+  const index = toolAudit.tools.findIndex((tool) => tool.name === name)
+  if (index === -1) toolAudit.tools.push(entry)
+  else toolAudit.tools[index] = entry
+  toolAudit.tools.sort((left, right) => left.name.localeCompare(right.name))
+  toolAudit.count = toolAudit.tools.length
+  toolAudit.capturedAt ||= now()
+  toolAudit.updatedAt = now()
+}
+
+async function flushToolAudit($) {
+  await $.fs.write(TOOL_AUDIT_FILE, JSON.stringify(toolAudit, null, 2))
 }
 
 export function register(on) {
@@ -89,6 +126,17 @@ export function register(on) {
       await flush($)
     } catch (_) {
       // The probe must never affect a conversation when usage is unavailable.
+    }
+    return result
+  })
+
+  on('tool.describe', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      rememberTool(e, result)
+      await flushToolAudit($)
+    } catch (_) {
+      // Auditing must never prevent a tool from being described to Claude.
     }
     return result
   })

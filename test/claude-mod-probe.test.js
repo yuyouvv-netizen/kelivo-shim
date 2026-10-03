@@ -7,6 +7,8 @@ import {
   compactToolDescription,
 } from "../mods/kelivo-probe/tool-descriptions.js";
 
+process.env.CLAUDE_MOD_AUDIT_ENABLED = "1";
+
 test("metadata probe observes events without changing or storing prompt text", async () => {
   const hooks = new Map();
   register((event, handler) => hooks.set(event, handler));

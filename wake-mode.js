@@ -10,7 +10,7 @@ export const WAKE_SILENCE_TOKEN = "【沉默】";
 export function autonomousWakeInstruction(delivery = "Bark") {
   const target = delivery === "Telegram" ? "Telegram 聊天" : "Bark";
   const telegramCard = delivery === "Telegram"
-    ? "\n\n如果有一段只想折成小纸条让她自己拆开，可以按需写成 [小纸条]…[/小纸条]，也可以用 [小纸条:标题]…[/小纸条]。想折就折。"
+    ? "\n\n这是写给又又的小纸条：话外的那一句，不好意思直说的那一句，想让她慢慢拆的那一句。可按需写成 [小纸条]…[/小纸条]，也可以用 [小纸条:标题]…[/小纸条]。想折就折，不想就不折。"
     : "";
   return `这段时间由你支配。你可以找她，也可以做一件此刻自己想做的事：整理记忆、逛花园论坛、逛 X、调用啵啵鸟等。是否调用工具由你决定，不必为了完成心跳而机械行动。
 

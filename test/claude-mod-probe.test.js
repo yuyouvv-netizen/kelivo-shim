@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { register } from "../mods/kelivo-probe/hooks/register.js";
+import {
+  TOOL_DESCRIPTION_OVERRIDES,
+  compactToolDescription,
+} from "../mods/kelivo-probe/tool-descriptions.js";
 
 test("metadata probe observes events without changing or storing prompt text", async () => {
   const hooks = new Map();
@@ -86,7 +90,56 @@ test("metadata probe observes events without changing or storing prompt text", a
     name: "mcp__browser__x_read_post",
     description: "Read a post without modifying it.",
     chars: 33,
+    originalChars: 33,
+    savedChars: 0,
+    compacted: false,
     origin: "mcp",
   }]);
   assert.doesNotMatch(JSON.stringify(audit), /stale/);
+});
+
+test("tool descriptions compact only an explicit allowlist", async () => {
+  const hooks = new Map();
+  register((event, handler) => hooks.set(event, handler));
+
+  const writes = new Map();
+  const api = {
+    fs: {
+      write: async (file, value) => writes.set(file, JSON.parse(value)),
+    },
+  };
+  const originalDescription = "A deliberately long web-search description that contains repeated guidance.";
+  const original = {
+    description: originalDescription,
+    untouched: true,
+  };
+  const compacted = await hooks.get("tool.describe")(
+    api,
+    { tool: "WebSearch", origin: { kind: "builtin" } },
+    async () => original,
+  );
+
+  assert.notEqual(compacted, original);
+  assert.equal(compacted.description, TOOL_DESCRIPTION_OVERRIDES.WebSearch);
+  assert.equal(compacted.untouched, true);
+  assert.equal(original.description, originalDescription);
+
+  const audit = writes.get("/tmp/kelivo-claude-mod-tools.json");
+  const entry = audit.tools.find((tool) => tool.name === "WebSearch");
+  assert.equal(entry.originalChars, Array.from(originalDescription).length);
+  assert.equal(entry.chars, Array.from(TOOL_DESCRIPTION_OVERRIDES.WebSearch).length);
+  assert.equal(entry.compacted, true);
+});
+
+test("compacted descriptions retain behavior and safety boundaries", () => {
+  assert.match(TOOL_DESCRIPTION_OVERRIDES.WebSearch, /Sources/);
+  assert.match(TOOL_DESCRIPTION_OVERRIDES.WebSearch, /current year/);
+  assert.match(TOOL_DESCRIPTION_OVERRIDES.mcp__garden__create_thread, /without publishing/);
+  assert.match(TOOL_DESCRIPTION_OVERRIDES.mcp__garden__create_thread, /tags required/);
+  assert.match(TOOL_DESCRIPTION_OVERRIDES.mcp__ombre__hold, /明确决定/);
+  assert.match(TOOL_DESCRIPTION_OVERRIDES.mcp__ombre__hold, /逐字保存/);
+  assert.equal(
+    compactToolDescription("mcp__browser__x_like_post", "keep this exact boundary"),
+    "keep this exact boundary",
+  );
 });

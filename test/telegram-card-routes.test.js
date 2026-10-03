@@ -27,7 +27,7 @@ test("card page keeps private text server-side until Telegram identity is verifi
   const token = "123456:private-token";
   const chatId = 8012;
   const store = new TelegramCardStore({ dir: root });
-  const card = store.create({ title: "虞克的碎碎念", body: "只有配对的人能看到", chatId });
+  const card = store.create({ title: "虞克的小纸条", body: "只有配对的人能看到", chatId });
   const app = express();
   registerTelegramCardRoutes(app, {
     getStore: () => store,

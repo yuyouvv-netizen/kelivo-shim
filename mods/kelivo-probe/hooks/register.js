@@ -1,7 +1,13 @@
-// Metadata-only probe for Claude Code 2.1.287+ Mods.
-// It never records prompt text and never changes an event or its result.
+// Prompt-metadata audit and targeted tool-description compaction for
+// Claude Code 2.1.287+ Mods. Prompt text is never recorded.
+import { compactToolDescription } from '../tool-descriptions.js'
+
 const PROBE_FILE = '/tmp/kelivo-claude-mod-probe.json'
 const TOOL_AUDIT_FILE = '/tmp/kelivo-claude-mod-tools.json'
+
+function auditEnabled() {
+  return process.env.CLAUDE_MOD_AUDIT_ENABLED === '1'
+}
 
 const state = {
   schema: 1,
@@ -15,7 +21,7 @@ const state = {
 }
 
 const toolAudit = {
-  schema: 1,
+  schema: 2,
   capturedAt: null,
   updatedAt: null,
   count: 0,
@@ -48,6 +54,7 @@ function rememberAttachment(type, origin) {
 }
 
 async function flush($) {
+  if (!auditEnabled()) return
   state.updatedAt = now()
   await $.fs.write(PROBE_FILE, JSON.stringify(state, null, 2))
 }
@@ -56,15 +63,21 @@ function toolName(event) {
   return typeof event?.tool === 'string' && event.tool ? event.tool : 'unknown'
 }
 
-function rememberTool(event, result) {
+function rememberTool(event, result, originalDescription) {
   const description = typeof result?.description === 'string'
     ? result.description
     : typeof event?.description === 'string' ? event.description : ''
+  const original = typeof originalDescription === 'string'
+    ? originalDescription
+    : description
   const name = toolName(event)
   const entry = {
     name,
     description,
     chars: Array.from(description).length,
+    originalChars: Array.from(original).length,
+    savedChars: Math.max(0, Array.from(original).length - Array.from(description).length),
+    compacted: description !== original,
     origin: typeof event?.origin?.kind === 'string' ? event.origin.kind : null,
   }
   const index = toolAudit.tools.findIndex((tool) => tool.name === name)
@@ -77,6 +90,7 @@ function rememberTool(event, result) {
 }
 
 async function flushToolAudit($) {
+  if (!auditEnabled()) return
   await $.fs.write(TOOL_AUDIT_FILE, JSON.stringify(toolAudit, null, 2))
 }
 
@@ -131,9 +145,21 @@ export function register(on) {
   })
 
   on('tool.describe', async ($, e, next) => {
-    const result = await next(e)
+    const originalResult = await next(e)
+    const originalDescription = typeof originalResult?.description === 'string'
+      ? originalResult.description
+      : undefined
+    let result = originalResult
     try {
-      rememberTool(e, result)
+      const description = compactToolDescription(toolName(e), originalDescription)
+      if (description !== originalDescription && originalResult && typeof originalResult === 'object') {
+        result = { ...originalResult, description }
+      }
+    } catch (_) {
+      // A compaction failure must leave the upstream description unchanged.
+    }
+    try {
+      rememberTool(e, result, originalDescription)
       await flushToolAudit($)
     } catch (_) {
       // Auditing must never prevent a tool from being described to Claude.

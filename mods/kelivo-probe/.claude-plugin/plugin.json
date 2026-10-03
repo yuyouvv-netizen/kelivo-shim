@@ -1,7 +1,7 @@
 {
   "name": "kelivo-probe",
-  "version": "0.1.0",
-  "description": "Read-only Claude Code Mods compatibility probe for kelivo-shim",
+  "version": "0.2.0",
+  "description": "Claude Code Mods tool-description compaction and prompt-safe audit for kelivo-shim",
   "author": {
     "name": "kelivo-shim"
   }

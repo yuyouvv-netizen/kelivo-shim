@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 export const DEFAULT_TELEGRAM_CARD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const CARD_ID_RE = /^[a-f0-9]{32}$/;
-const CARD_MARKER_RE = /\[碎碎念(?:\s*[:：]\s*([^\]\n]{1,64}))?\]([\s\S]*?)\[\/碎碎念\]/g;
+const CARD_MARKER_RE = /\[(小纸条|碎碎念)(?:\s*[:：]\s*([^\]\n]{1,64}))?\]([\s\S]*?)\[\/\1\]/g;
 const TELEGRAM_CARD_RABBITS_FILE = fileURLToPath(
   new URL("./telegram-card-rabbits.webp", import.meta.url),
 );
@@ -31,11 +31,11 @@ export function splitTelegramCardSegments(value, maxCards = 4) {
   for (const match of source.matchAll(CARD_MARKER_RE)) {
     if (cards >= maxCards) break;
     appendTextSegment(segments, source.slice(cursor, match.index));
-    const body = text(match[2], 12_000);
+    const body = text(match[3], 12_000);
     if (body) {
       segments.push({
         type: "card",
-        title: text(match[1], 64) || null,
+        title: text(match[2], 64) || null,
         content: body,
       });
       cards += 1;
@@ -87,7 +87,7 @@ export class TelegramCardStore {
     const card = {
       version: 1,
       id: crypto.randomBytes(16).toString("hex"),
-      title: text(title, 64) || "碎碎念",
+      title: text(title, 64) || "小纸条",
       body: text(body, 12_000),
       chatId: String(chatId || ""),
       createdAt: new Date(this.now()).toISOString(),
@@ -204,7 +204,7 @@ function cardPageHtml() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>碎碎念</title>
+  <title>小纸条</title>
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <style>
     :root{color-scheme:light dark;--ink:#4a3c34;--muted:#9a8172;--paper:#fffaf1;--edge:rgba(178,139,113,.25);--accent:#bd8d73;--close:rgba(255,250,241,.78)}
@@ -232,13 +232,13 @@ function cardPageHtml() {
   if (!web || !web.initData) { fail('请从 Telegram 对话里的小卡片打开。'); return; }
   web.ready(); web.expand();
   fetch(location.pathname + '/open', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initData:web.initData}),credentials:'omit'})
-    .then(async (response) => { const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.error || '这张碎碎念已经散掉了。'); return data.card; })
+    .then(async (response) => { const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.error || '这张小纸条已经散掉了。'); return data.card; })
     .then((card) => {
       document.getElementById('title').textContent=card.title;
       document.getElementById('meta').textContent=card.createdLabel;
       document.getElementById('body').textContent=card.body;
       loading.style.display='none'; document.getElementById('paper').style.display='block'; document.getElementById('close').style.display='block';
-    }).catch((cause) => fail(cause.message || '这张碎碎念已经散掉了。'));
+    }).catch((cause) => fail(cause.message || '这张小纸条已经散掉了。'));
   document.getElementById('close').addEventListener('click', () => web.close());
 })();
 </script></body></html>`;
@@ -298,7 +298,7 @@ export function registerTelegramCardRoutes(app, {
     });
     if (!auth.ok) return res.status(401).json({ ok: false, error: "这张纸条只认配对的你。" });
     const card = store.get(req.params.id, chatId);
-    if (!card) return res.status(404).json({ ok: false, error: "这张碎碎念已经散掉了。" });
+    if (!card) return res.status(404).json({ ok: false, error: "这张小纸条已经散掉了。" });
     log("[tg-card] opened", card.id);
     return res.json({
       ok: true,

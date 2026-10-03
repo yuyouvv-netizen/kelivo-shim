@@ -2054,7 +2054,7 @@ async function tgSend(text) {
 async function tgSendCard({ title, content }) {
   if (!tgChatId || !content || !TG_CARD_BASE_URL) return false;
   const card = tgCards.create({
-    title: title || `${aiName.get()}的碎碎念`,
+    title: title || `${aiName.get()}的小纸条`,
     body: content,
     chatId: tgChatId,
   });

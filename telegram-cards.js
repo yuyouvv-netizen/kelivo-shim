@@ -1,11 +1,15 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
 export const DEFAULT_TELEGRAM_CARD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const CARD_ID_RE = /^[a-f0-9]{32}$/;
 const CARD_MARKER_RE = /\[碎碎念(?:\s*[:：]\s*([^\]\n]{1,64}))?\]([\s\S]*?)\[\/碎碎念\]/g;
+const TELEGRAM_CARD_RABBITS_FILE = fileURLToPath(
+  new URL("./telegram-card-rabbits.webp", import.meta.url),
+);
 
 function text(value, max) {
   return String(value || "").trim().slice(0, max);
@@ -203,18 +207,20 @@ function cardPageHtml() {
   <title>碎碎念</title>
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <style>
-    :root{color-scheme:light dark;--ink:#302d2a;--muted:#817a73;--paper:rgba(255,252,246,.92);--edge:rgba(70,58,48,.10)}
-    *{box-sizing:border-box} body{margin:0;min-height:100vh;padding:26px 18px calc(34px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;color:var(--ink);background:radial-gradient(circle at 12% 10%,rgba(255,255,255,.9),transparent 34%),radial-gradient(circle at 88% 92%,rgba(176,196,173,.30),transparent 36%),#e9e4dc}
-    body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.24;background-image:radial-gradient(circle at 20% 30%,#fff 0 1px,transparent 1.5px),radial-gradient(circle at 80% 65%,#fff 0 1px,transparent 1.5px);background-size:45px 45px,58px 58px}
-    main{position:relative;max-width:680px;margin:0 auto}.paper{display:none;min-height:58vh;padding:30px 25px 34px;border:1px solid var(--edge);border-radius:28px;background:var(--paper);box-shadow:0 20px 54px rgba(44,39,35,.15);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
-    .mark{font-size:23px;line-height:1;margin-bottom:20px;color:#847a70}.title{margin:0;font-size:22px;line-height:1.35;letter-spacing:.02em}.meta{margin-top:8px;color:var(--muted);font-size:13px}.body{margin-top:27px;font-size:18px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}.loading,.error{margin:32vh auto 0;text-align:center;color:var(--muted);font-size:15px}.error{display:none;max-width:280px;line-height:1.7}.close{display:none;width:100%;margin:18px 0 0;padding:14px;border:0;border-radius:18px;background:rgba(255,255,255,.72);color:var(--ink);font-size:16px}
-    @media(prefers-color-scheme:dark){:root{--ink:#eee9e2;--muted:#aaa29a;--paper:rgba(39,38,37,.92);--edge:rgba(255,255,255,.08)}body{background:radial-gradient(circle at 15% 8%,rgba(105,103,100,.32),transparent 35%),radial-gradient(circle at 82% 90%,rgba(72,91,76,.30),transparent 38%),#171717}.close{background:rgba(255,255,255,.09)}}
+    :root{color-scheme:light dark;--ink:#4a3c34;--muted:#9a8172;--paper:#fffaf1;--edge:rgba(178,139,113,.25);--accent:#bd8d73;--close:rgba(255,250,241,.78)}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;padding:24px 17px calc(32px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;color:var(--ink);background:radial-gradient(circle at 14% 7%,rgba(255,255,255,.96),transparent 31%),radial-gradient(circle at 88% 91%,rgba(220,181,153,.30),transparent 38%),linear-gradient(145deg,#eee4d7,#e5d5c3)}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.19;background-image:radial-gradient(circle at 20% 30%,#fff 0 1px,transparent 1.6px),radial-gradient(circle at 78% 68%,#fff 0 1px,transparent 1.6px);background-size:43px 43px,61px 61px}
+    main{position:relative;max-width:680px;margin:0 auto}.paper{position:relative;isolation:isolate;display:none;min-height:62vh;overflow:hidden;padding:31px 25px clamp(190px,42vw,285px);border:1px solid var(--edge);border-radius:30px;background:linear-gradient(155deg,rgba(255,255,255,.72),transparent 34%),var(--paper);box-shadow:0 21px 55px rgba(91,62,45,.15),inset 0 0 0 1px rgba(255,255,255,.62)}
+    .paper:before{content:"";position:absolute;z-index:-1;right:-88px;bottom:-92px;width:310px;height:310px;border-radius:50%;background:rgba(220,181,153,.12)}
+    .mark{font-size:20px;line-height:1;margin-bottom:21px;color:var(--accent)}.title{margin:0;font-size:22px;font-weight:600;line-height:1.42;letter-spacing:.025em}.meta{margin-top:9px;color:var(--muted);font-size:13px;letter-spacing:.04em}.body{position:relative;z-index:1;margin-top:28px;font-size:18px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere}.rabbits{position:absolute;z-index:0;right:-8px;bottom:-3px;width:min(67%,390px);height:auto;pointer-events:none;user-select:none;filter:drop-shadow(0 11px 14px rgba(111,73,49,.12))}.loading,.error{margin:32vh auto 0;text-align:center;color:var(--muted);font-size:15px}.error{display:none;max-width:280px;line-height:1.7}.close{display:none;width:100%;margin:17px 0 0;padding:14px;border:1px solid rgba(178,139,113,.14);border-radius:18px;background:var(--close);color:var(--ink);font-size:16px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+    @media(max-width:420px){body{padding-left:14px;padding-right:14px}.paper{padding:27px 22px clamp(174px,48vw,220px);border-radius:27px}.rabbits{right:-13px;width:72%}}
+    @media(prefers-color-scheme:dark){:root{--ink:#f3e9de;--muted:#bda99c;--paper:#302722;--edge:rgba(236,193,162,.16);--accent:#d7a98e;--close:rgba(54,43,37,.82)}body{background:radial-gradient(circle at 14% 8%,rgba(118,91,74,.34),transparent 35%),radial-gradient(circle at 84% 91%,rgba(112,74,53,.28),transparent 40%),#1b1715}.paper{background:linear-gradient(155deg,rgba(255,255,255,.055),transparent 34%),var(--paper);box-shadow:0 21px 58px rgba(0,0,0,.30),inset 0 0 0 1px rgba(255,255,255,.035)}.paper:before{background:rgba(204,151,117,.10)}.rabbits{filter:drop-shadow(0 12px 16px rgba(0,0,0,.22)) brightness(.86)}}
   </style>
 </head>
 <body><main>
   <div class="loading" id="loading">正在拆开这张纸条…</div>
   <div class="error" id="error"></div>
-  <article class="paper" id="paper"><div class="mark">♡</div><h1 class="title" id="title"></h1><div class="meta" id="meta"></div><div class="body" id="body"></div></article>
+  <article class="paper" id="paper"><div class="mark">♡</div><h1 class="title" id="title"></h1><div class="meta" id="meta"></div><div class="body" id="body"></div><img class="rabbits" src="/telegram/card-art/rabbits.webp" alt="" aria-hidden="true"></article>
   <button class="close" id="close" type="button">收好纸条</button>
 </main>
 <script>
@@ -264,11 +270,19 @@ export function registerTelegramCardRoutes(app, {
       typeof getPairedChatId !== "function" || !json) {
     throw new Error("Telegram card routes require app, store, bot token, pairing and json parser");
   }
+  app.get("/telegram/card-art/rabbits.webp", (_req, res) => {
+    res.set({
+      "Cache-Control": "public, max-age=604800, immutable",
+      "Content-Security-Policy": "default-src 'none'",
+      "X-Content-Type-Options": "nosniff",
+    });
+    return res.type("image/webp").sendFile(TELEGRAM_CARD_RABBITS_FILE);
+  });
   app.get("/telegram/card/:id", (req, res) => {
     if (!CARD_ID_RE.test(String(req.params.id || ""))) return res.status(404).send("Not found");
     res.set({
       "Cache-Control": "no-store",
-      "Content-Security-Policy": "default-src 'none'; script-src https://telegram.org 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:",
+      "Content-Security-Policy": "default-src 'none'; script-src https://telegram.org 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:",
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
     });

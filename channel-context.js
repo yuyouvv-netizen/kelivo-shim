@@ -1,9 +1,9 @@
 export function channelContextFor(source) {
   if (source === "telegram") {
-    return "【系统·当前入口】Telegram。本轮回复只会送回 Telegram；可按需使用 [语音]…[/语音]、已登记的 [贴纸:名字]，以及 [碎碎念]…[/碎碎念]（显示为可展开的小卡；可写成 [碎碎念:标题]…[/碎碎念]）。碎碎念是自愿的表达方式，不要为了展示功能机械使用。";
+    return "【系统·当前入口】Telegram。本轮回复只会送回 Telegram；可按需使用 [语音]…[/语音]，以及 [小纸条]…[/小纸条]（显示为可展开的小卡片；可写成 [小纸条:标题]…[/小纸条]）。这是写给又又的小纸条：话外的那一句，不好意思直说的那一句，想让她慢慢拆的那一句。想折就折，不想就不折。";
   }
   if (source === "kelivo") {
-    return "【系统·当前入口】Kelivo。本轮回复只会送回 Kelivo；不要使用 Telegram 专属的语音、贴纸或碎碎念标记。";
+    return "【系统·当前入口】Kelivo。本轮回复只会送回 Kelivo。";
   }
   return "";
 }

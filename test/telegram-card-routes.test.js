@@ -27,7 +27,7 @@ test("card page keeps private text server-side until Telegram identity is verifi
   const token = "123456:private-token";
   const chatId = 8012;
   const store = new TelegramCardStore({ dir: root });
-  const card = store.create({ title: "虞克的碎碎念", body: "只有配对的人能看到", chatId });
+  const card = store.create({ title: "虞克的小纸条", body: "只有配对的人能看到", chatId });
   const app = express();
   registerTelegramCardRoutes(app, {
     getStore: () => store,
@@ -44,8 +44,14 @@ test("card page keeps private text server-side until Telegram identity is verifi
   assert.equal(shell.status, 200);
   const html = await shell.text();
   assert.match(html, /正在拆开这张纸条/);
+  assert.match(html, /\/telegram\/card-art\/rabbits\.webp/);
   assert.doesNotMatch(html, /只有配对的人能看到/);
   assert.equal(shell.headers.get("cache-control"), "no-store");
+
+  const art = await fetch(`${base}/telegram/card-art/rabbits.webp`);
+  assert.equal(art.status, 200);
+  assert.equal(art.headers.get("content-type"), "image/webp");
+  assert.ok((await art.arrayBuffer()).byteLength > 10_000);
 
   const denied = await fetch(`${base}/telegram/card/${card.id}/open`, {
     method: "POST",

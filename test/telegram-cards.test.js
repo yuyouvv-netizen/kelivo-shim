@@ -13,26 +13,29 @@ import {
   validateTelegramInitData,
 } from "../telegram-cards.js";
 
-test("thought-card markers preserve surrounding reply order and optional titles", () => {
+test("paper-note markers preserve surrounding reply order and optional titles", () => {
   assert.deepEqual(
-    splitTelegramCardSegments("前面。\n\n[碎碎念:没说出口的]\n藏起来。\n第二行。\n[/碎碎念]\n\n后面。"),
+    splitTelegramCardSegments("前面。\n\n[小纸条:没说出口的]\n藏起来。\n第二行。\n[/小纸条]\n\n后面。"),
     [
       { type: "text", content: "前面。\n\n" },
       { type: "card", title: "没说出口的", content: "藏起来。\n第二行。" },
       { type: "text", content: "\n\n后面。" },
     ],
   );
-  assert.deepEqual(splitTelegramCardSegments("[碎碎念]只有正文[/碎碎念]"), [
+  assert.deepEqual(splitTelegramCardSegments("[小纸条]只有正文[/小纸条]"), [
     { type: "card", title: null, content: "只有正文" },
+  ]);
+  assert.deepEqual(splitTelegramCardSegments("[碎碎念]旧写法仍可拆开[/碎碎念]"), [
+    { type: "card", title: null, content: "旧写法仍可拆开" },
   ]);
 });
 
 test("malformed or empty card markers never swallow reply text", () => {
-  assert.deepEqual(splitTelegramCardSegments("[碎碎念]没有结尾"), [
-    { type: "text", content: "[碎碎念]没有结尾" },
+  assert.deepEqual(splitTelegramCardSegments("[小纸条]没有结尾"), [
+    { type: "text", content: "[小纸条]没有结尾" },
   ]);
-  assert.deepEqual(splitTelegramCardSegments("[碎碎念]   [/碎碎念]"), [
-    { type: "text", content: "[碎碎念]   [/碎碎念]" },
+  assert.deepEqual(splitTelegramCardSegments("[小纸条]   [/小纸条]"), [
+    { type: "text", content: "[小纸条]   [/小纸条]" },
   ]);
 });
 
